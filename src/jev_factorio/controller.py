@@ -187,9 +187,17 @@ class HierarchicalLoop(AgentLoop):
         reserved = self.memory.reservations.get(plan.id)
         return bool(
             source in entities and target in entities and kind in {"pipe", "small-electric-pole"}
-            and isinstance(counts, dict) and counts.get(kind, 0) == 0
-            and costs and reserved == costs
-            and all(snapshot.inventory.get(item, 0) >= quantity
+            # Existing connectors from earlier verified plans are unrelated to
+            # this write-ahead dispatch.  Fair placement debits each connector
+            # before returning, so exact retention of the sole reserved material
+            # proves this attempt placed none.  Require complete native count
+            # telemetry and no in-flight hand craft so a gain cannot mask a debit.
+            and isinstance(counts, dict)
+            and type(counts.get(kind, 0)) is int and counts.get(kind, 0) >= 0
+            and set(costs) == {kind} and reserved == costs
+            and type(snapshot.factory.get("crafting_queue")) is int
+            and snapshot.factory["crafting_queue"] == 0
+            and all(snapshot.inventory.get(item, 0) == quantity
                     for item, quantity in costs.items())
         )
 

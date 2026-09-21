@@ -264,6 +264,23 @@ def test_native_fluid_points_keep_typed_filters_and_boiler_steam_output():
         NativeFactory.fluid_connection_points(entity, "crude-oil", output=False)
 
 
+def test_native_generator_boundary_points_are_normalized_to_pipe_cells():
+    fle = pytest.importorskip("fle.env")
+    engine = SimpleNamespace(
+        name="steam-engine",
+        position=fle.Position(x=-16.5, y=-27.5),
+        connection_points=[
+            fle.Position(x=-16.5, y=-30),
+            fle.Position(x=-16.5, y=-25),
+        ],
+    )
+
+    assert NativeFactory.fluid_connection_points(engine, "steam", output=False) == [
+        fle.Position(x=-16.5, y=-30.5),
+        fle.Position(x=-16.5, y=-24.5),
+    ]
+
+
 def test_native_typed_output_does_not_treat_unknown_fluid_as_compatible():
     unknown = SimpleNamespace(x=1, y=2, type="")
     entity = SimpleNamespace(output_connection_points=[unknown])
@@ -731,7 +748,8 @@ def test_ambiguous_placement_stays_pending_without_absence_proof(
 
 
 @pytest.mark.parametrize("change", [
-    "missing_counts", "existing_pipe", "spent_material", "changed_reservation", "missing_role",
+    "missing_counts", "spent_material", "changed_reservation", "missing_role",
+    "missing_crafting_queue", "craft_in_flight",
 ])
 def test_ambiguous_connection_reconciliation_fails_closed(change):
     plan = Plan(
@@ -763,15 +781,47 @@ def test_ambiguous_connection_reconciliation_fails_closed(change):
     assert controller._absent_ambiguous_connection(plan, plan.steps[0], state)
     if change == "missing_counts":
         state.factory.pop("force_entity_counts")
-    elif change == "existing_pipe":
-        state.factory["force_entity_counts"]["pipe"] = 1
     elif change == "spent_material":
         state.inventory["pipe"] = 40
     elif change == "changed_reservation":
         controller.memory.reservations[plan.id]["pipe"] = 40
     elif change == "missing_role":
         state.factory["entities"].pop("utility:water")
+    elif change == "missing_crafting_queue":
+        state.factory.pop("crafting_queue")
+    elif change == "craft_in_flight":
+        state.factory["crafting_queue"] = 1
     assert not controller._absent_ambiguous_connection(plan, plan.steps[0], state)
+
+
+def test_ambiguous_connection_ignores_connectors_from_verified_prior_plan():
+    plan = Plan(
+        id="factory:factory_connect:", goal="rocket_launch", description="connect",
+        steps=[Step(
+            action="factory_connect", effect="connection", costs={"pipe": 41},
+            parameters={
+                "source": "utility:boiler", "target": "utility:engine",
+                "kind": "pipe", "fluid": "steam",
+            },
+        )],
+    )
+    state = snapshot(inventory={"pipe": 41})
+    state.factory["entities"] = {
+        "utility:boiler": machine("boiler"),
+        "utility:engine": machine("steam-engine"),
+    }
+    state.factory["force_entity_counts"] = {"pipe": 9}
+    controller = object.__new__(HierarchicalLoop)
+    controller.memory = CampaignMemory(
+        session_id="test-factory", target="rocket_launch", active_goal="rocket_launch",
+        active_plan=plan.to_dict(), pending={
+            "started_tick": 10, "polls": 93,
+            "action": "factory_connect", "dispatch": "ambiguous",
+        },
+        reservations={plan.id: {"pipe": 41}}, last_tick=10, status="uncertain",
+    )
+
+    assert controller._absent_ambiguous_connection(plan, plan.steps[0], state)
 
 
 def test_ambiguous_connection_reconciles_without_dispatching():

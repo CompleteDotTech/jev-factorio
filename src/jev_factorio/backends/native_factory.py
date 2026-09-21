@@ -119,6 +119,29 @@ class NativeFactory:
             raise ValueError(f"Requested {direction} fluid has no native connection point")
         generic = list(getattr(entity, "connection_points", []) or [])
         if generic:
+            # FLE 0.4.3 serializes generator ports at the edge of the entity
+            # collision box.  On the axis of connection that is an integer tile
+            # boundary, not the half-integer center where a one-tile pipe can be
+            # built.  Move only those boundary coordinates one half-tile away
+            # from the generator; other handlers already report pipe-cell centers.
+            if getattr(entity, "name", "") in {"steam-engine", "steam-turbine"}:
+                center = entity.position
+                normalized = []
+                for point in generic:
+                    coordinates = []
+                    for coordinate, origin in (
+                        (float(point.x), float(center.x)),
+                        (float(point.y), float(center.y)),
+                    ):
+                        fraction = coordinate - math.floor(coordinate)
+                        if math.isclose(fraction, 0.5):
+                            coordinates.append(coordinate)
+                            continue
+                        if not math.isclose(fraction, 0.0) or math.isclose(coordinate, origin):
+                            raise ValueError("Generator connection point is not on a pipe-cell boundary")
+                        coordinates.append(coordinate + math.copysign(0.5, coordinate - origin))
+                    normalized.append(type(point)(x=coordinates[0], y=coordinates[1]))
+                generic = normalized
             return generic
         direction = "output" if output else "input"
         raise ValueError(f"Requested {direction} fluid has no native connection point")
