@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from uuid import uuid4
 
 from ..state import GameSnapshot
 
@@ -72,7 +73,8 @@ class FleBackend:
                         client.close()
                         raise RuntimeError("No live agent session to resume; refusing to reset.")
                 else:
-                    client.send_command("/sc jev_fle_runtime = {}")
+                    client.send_command("/sc jev_fle_runtime = {jev_session_id="
+                                        + json.dumps(uuid4().hex) + "}")
                 return SessionRcon(client), address
 
             def initialise(self, *args, **kwargs):
@@ -107,6 +109,7 @@ class FleBackend:
         raw = self._instance.rcon_client.send_command(
             "/sc local agent = storage.agent_characters[1]; "
             "rcon.print(helpers.table_to_json({tick=game.tick,"
+            "session_id=storage.jev_session_id,"
             "position={agent.position.x,agent.position.y}}))"
         )
         live = json.loads(raw)
@@ -125,12 +128,18 @@ class FleBackend:
         entities = tools.get_entities({Prototype.BurnerMiningDrill, Prototype.WoodenChest})
         drills = [entity for entity in entities if entity.name == "burner-mining-drill"]
         self._drill = drills[0] if drills else None
-        collected = sum(
-            tools.inspect_inventory(entity).get("iron-ore", 0)
-            for entity in entities if entity.name == "wooden-chest"
-        )
+        output_chests = [
+            entity for entity in entities
+            if self._drill is not None and entity.name == "wooden-chest"
+            and math.hypot(entity.position.x - self._drill.drop_position.x,
+                           entity.position.y - self._drill.drop_position.y) <= 0.1
+        ]
+        collected = sum(tools.inspect_inventory(entity).get("iron-ore", 0)
+                        for entity in output_chests)
         return GameSnapshot(
             tick=live["tick"],
+            session_id=live.get("session_id", ""),
+            world_kind="fle",
             player_position=position,
             inventory=inventory,
             nearby_resources=nearby,
@@ -138,6 +147,7 @@ class FleBackend:
             alerts=alerts,
             drill_status=self._drill.status.value if self._drill else "",
             drill_fuel=self._drill.fuel.get("coal", 0) if self._drill else 0,
+            drill_output_connected=bool(output_chests),
             iron_ore_collected=collected,
         )
 

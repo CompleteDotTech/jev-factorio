@@ -1,0 +1,131 @@
+from copy import deepcopy
+
+import pytest
+
+from jev_factorio.backends.mock import MockBackend
+from jev_factorio.jev_client import MockJevClient, make_client
+from jev_factorio.judgments import InvalidJudgment, question_batch, select_plan, validate_answers
+from jev_factorio.skills import Plan, Step, compile_plans
+
+
+def batch():
+    snapshot = MockBackend().observe()
+    plans, _ = compile_plans("stockpile_fuel", snapshot)
+    state = {"facts": snapshot.for_jev(), "active_goal": "stockpile_fuel"}
+    context, questions, _ = question_batch(state, plans)
+    return plans, context, questions
+
+
+def test_explicit_question_references_and_full_mock_distributions():
+    plans, context, questions = batch()
+    assert len(questions) == 1 + 3 * len(plans)
+    for plan in plans:
+        assert plan.id in questions[plan.id + "/benefit"]["instructions"]
+    answers = MockJevClient().evaluate(context, questions)
+    validate_answers(questions, answers)
+    assert all(sum(a["probabilities"].values()) == 1
+               for a in answers.values() if "probabilities" in a)
+
+
+def test_batched_selection_is_labelled_as_mock():
+    plans, context, _ = batch()
+    result = select_plan(MockJevClient(), context, plans)
+    assert result.plan_id in {p.id for p in plans}
+    assert result.source == "mock"
+    assert result.utilities
+
+
+@pytest.mark.parametrize("change", ["missing", "extra", "nan", "negative", "sum", "label", "type", "confidence"])
+def test_invalid_answers_fail_closed(change):
+    _, context, questions = batch()
+    answers = deepcopy(MockJevClient().evaluate(context, questions))
+    chosen = answers["candidate"]["choice"]
+    if change == "missing":
+        del answers["candidate"]
+    elif change == "extra":
+        answers["unsolicited"] = {"type": "noul", "noul": 1}
+    elif change == "nan":
+        answers["candidate"]["probabilities"][chosen] = float("nan")
+    elif change == "negative":
+        answers["candidate"]["probabilities"][chosen] = -1
+    elif change == "sum":
+        answers["candidate"]["probabilities"][chosen] = 0.8
+    elif change == "label":
+        answers["candidate"]["choice"] = "launch_rocket_now"
+    elif change == "type":
+        answers["candidate"]["type"] = "score"
+    else:
+        answers["candidate"]["confidence"] = 1.1
+    with pytest.raises(InvalidJudgment):
+        validate_answers(questions, answers)
+
+
+def test_low_confidence_or_missing_evidence_abstains():
+    plans, context, _ = batch()
+
+    class LowConfidence(MockJevClient):
+        def evaluate(self, state, questions):
+            answers = super().evaluate(state, questions)
+            answers["candidate"]["confidence"] = 0.1
+            return answers
+
+    class MissingEvidence(MockJevClient):
+        def evaluate(self, state, questions):
+            answers = super().evaluate(state, questions)
+            for key in answers:
+                if key.endswith("/needs_observation"):
+                    answers[key]["noul"] = 0.9
+            return answers
+
+    assert select_plan(LowConfidence(), context, plans).plan_id is None
+    assert select_plan(MissingEvidence(), context, plans).plan_id is None
+
+
+def test_request_count_and_byte_budget_are_bounded():
+    plans = [Plan(str(i), "fuel", "gather", (Step("mine_coal", "inventory", "coal", 5),))
+             for i in range(300)]
+    _, questions, offered = question_batch({}, plans)
+    assert len(offered) == 16
+    assert len(questions["candidate"]["criteria"]) == 17
+    with pytest.raises(ValueError, match="byte budget"):
+        question_batch({"facts": "x" * 50000}, plans)
+    with pytest.raises(ValueError):
+        question_batch({}, plans, max_candidates=255)
+
+
+def test_strict_client_creation_never_silently_uses_mock(monkeypatch):
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    with pytest.raises(ValueError, match="credentials"):
+        make_client(allow_mock=False)
+    assert isinstance(make_client(), MockJevClient)
+
+
+def test_provider_model_can_be_pinned_without_network(monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-only")
+    assert make_client(allow_mock=False, model="jev-1.13.0").model == "jev-1.13.0"
+
+
+@pytest.mark.parametrize("change", ["bad-legend", "bad-weighted-score", "unhashable-choice"])
+def test_contradictory_or_ill_typed_responses_rejected(change):
+    _, state, questions = batch()
+    answers = MockJevClient().evaluate(state, questions)
+    score_key = next(key for key in answers if key.endswith("/benefit"))
+    if change == "bad-legend":
+        answers[score_key]["legend"] = {}
+    elif change == "bad-weighted-score":
+        answers[score_key]["score"] = 0
+    else:
+        answers["candidate"]["choice"] = ["bad"]
+    with pytest.raises(InvalidJudgment):
+        validate_answers(questions, answers)
+
+
+def test_maximum_choice_uses_254_candidates_plus_observe():
+    plans = [Plan(str(i), "fuel", "gather", (Step("mine_coal", "inventory", "coal", 5),))
+             for i in range(300)]
+    _, questions, offered = question_batch({}, plans, max_candidates=254, max_bytes=1000000)
+    assert len(offered) == 254
+    assert len(questions["candidate"]["criteria"]) == 255
+    assert len(questions) == 763  # schema construction only; no live provider call

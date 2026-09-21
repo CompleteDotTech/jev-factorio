@@ -96,6 +96,8 @@ class AgentLoop:
         deadline = time.monotonic() + duration_seconds if duration_seconds is not None else None
         completed = 0
         while steps is None or completed < steps:
+            if getattr(self, "terminal", False):
+                break
             if deadline is not None and time.monotonic() >= deadline:
                 break
             delay = self.tick_seconds

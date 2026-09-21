@@ -22,7 +22,18 @@ class GameSnapshot:
     alerts: list[str] = field(default_factory=list)  # e.g. "drill out of fuel"
     drill_status: str = ""
     drill_fuel: int = 0
+    drill_output_connected: bool | None = None
     iron_ore_collected: int = 0
+
+    # Unknown telemetry stays unknown. These fields are backend facts, never
+    # filled from Jev answers. A controller checkpoint is bound to session_id.
+    session_id: str = ""
+    world_kind: str = "unknown"
+    game_version: str | None = None
+    researched: list[str] | None = None
+    production_rates: dict[str, float] | None = None
+    victory: bool | None = None
+    victory_source: str | None = None
 
     def for_jev(self) -> dict:
         """Compact structured state sent to Jev."""

@@ -83,6 +83,23 @@ starting decisions at its monotonic deadline; an in-flight decision may finish
 afterward. It makes ongoing API calls and remains limited to the bootstrap
 actions above, not full-game progression.
 
+## Hierarchical controller (opt-in)
+
+The [hierarchical controller guide](docs/HIERARCHICAL_CONTROLLER.md) describes
+persistent goals, batched JEV candidate evaluation, verified skill plans,
+checkpoint recovery, and deterministic comparison runs.
+
+```bash
+python -m jev_factorio --controller hierarchical --backend mock --mock-model \
+  --target bootstrap_mining --steps 40 --tick-seconds 0 \
+  --checkpoint runs/bootstrap-state.json --log-file runs/bootstrap.jsonl
+```
+
+This revision validates the controller on the mining bootstrap, **not a complete
+rocket-launch playthrough**. The `rocket_launch` target explicitly reports missing
+late-game capabilities instead of fabricating progress. Live validation remains
+separate from the synthetic tests. The existing flat controller stays the default.
+
 ## Author
 
 Built by **Timothy Wayne Gregg** (CompleteTech LLC, Cincinnati, OH).

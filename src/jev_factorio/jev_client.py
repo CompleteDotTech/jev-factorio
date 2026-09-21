@@ -33,6 +33,7 @@ class JevClient:
         resp.raise_for_status()
         body = resp.json()
         self.last_usage = body.get("usage")
+        self.last_model = body.get("model")
         return body["answers"]
 
 
@@ -41,6 +42,9 @@ class MockJevClient:
 
     Lets the whole loop run (and tests pass) with no API key and no spend.
     """
+
+    is_mock = True
+    model = "mock-rule-based"
 
     def evaluate(self, state: dict, questions: dict) -> dict:
         answers = {}
@@ -56,15 +60,17 @@ class MockJevClient:
                             pick = preferred
                             break
                 answers[qid] = {"type": "choice", "choice": pick,
-                                "probabilities": {k: (0.9 if k == pick else 0.0)
+                                "probabilities": {k: (1.0 if k == pick else 0.0)
                                                   for k in q["criteria"]},
                                 "confidence": 0.9}
             elif q["type"] == "noul":
                 answers[qid] = {"type": "noul", "noul": 0.0}
             else:
                 legend = {str(i): lvl for i, lvl in enumerate(q["criteria"])}
-                answers[qid] = {"type": "score", "score": 0.0, "legend": legend,
-                                "probabilities": {"0": 1.0}, "confidence": 1.0}
+                level = len(legend) - 1 if qid.endswith("/benefit") else 0
+                answers[qid] = {"type": "score", "score": float(level), "legend": legend,
+                                "probabilities": {k: float(k == str(level)) for k in legend},
+                                "confidence": 1.0}
         return answers
 
 
@@ -105,19 +111,25 @@ class CloudflareJevClient:
         body = resp.json()
         if not body.get("success"):
             raise RuntimeError(f"Cloudflare AI error: {body.get('errors')}")
-        return body["result"]["answers"]
+        result = body["result"]
+        self.last_usage = result.get("usage")
+        self.last_model = result.get("model")
+        return result["answers"]
 
 
-def make_client() -> object:
+def make_client(*, allow_mock: bool = True, model: str | None = None) -> object:
     """Real client when a key exists, mock otherwise.
 
     Priority: TypeSafe direct key, then Cloudflare Workers AI token.
     """
     key = os.environ.get("TYPESAFE_API_KEY")
     if key:
-        return JevClient(api_key=key)
+        return JevClient(api_key=key, model=model or "jev-latest")
     cf_token = os.environ.get("CLOUDFLARE_API_TOKEN")
     cf_acct = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
     if cf_token and cf_acct:
-        return CloudflareJevClient(account_id=cf_acct, api_token=cf_token)
+        return CloudflareJevClient(account_id=cf_acct, api_token=cf_token,
+                                   model=model or "typesafe/jev")
+    if not allow_mock:
+        raise ValueError("Live Jev credentials are required; use an explicit offline mock")
     return MockJevClient()
