@@ -44,6 +44,8 @@ def cli() -> None:
     p.add_argument("--dashboard-events", default=os.environ.get("JEV_DASHBOARD_EVENTS"),
                    help="Optional best-effort live dashboard JSONL; hierarchical controller only")
     p.add_argument("--controller", choices=("flat", "hierarchical"), default="flat")
+    p.add_argument("--factory-scheduling", choices=("serial", "ready-work"), default="serial",
+                   help="Opt-in bounded production choices; does not enable concurrent mutations or belts")
     p.add_argument("--target", choices=("bootstrap_mining", "iron_smelting", "steam_power",
                                        "automation_science", "rocket_launch"), default="rocket_launch")
     p.add_argument("--policy", choices=("jev", "deterministic", "hybrid"), default="jev")
@@ -73,6 +75,8 @@ def cli() -> None:
         p.error("--confidence-floor must be finite and in [0, 1]")
     if args.dashboard_events and args.controller != "hierarchical":
         p.error("--dashboard-events requires --controller hierarchical")
+    if args.factory_scheduling != "serial" and args.controller != "hierarchical":
+        p.error("--factory-scheduling requires --controller hierarchical")
     with ExitStack() as cleanup:
         writer = None
         if args.dashboard_events:
@@ -115,7 +119,8 @@ def cli() -> None:
             loop = HierarchicalLoop(make_backend(args.backend, resume=args.resume,
                                                  adopt_session=args.adopt_session), jev=client,
                                     target=args.target, policy=args.policy, checkpoint=args.checkpoint,
-                                    resume_controller=args.resume_controller, **options)
+                                    resume_controller=args.resume_controller,
+                                    factory_scheduling=args.factory_scheduling, **options)
         if writer is not None:
             from .dashboard import attach
             attach(loop, writer)

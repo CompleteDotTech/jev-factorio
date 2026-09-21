@@ -51,9 +51,15 @@ class FairActions:
         finally:
             self.command("storage.fair.stop()")
 
+    def _note(self, key: str, amount: int = 1) -> None:
+        if not hasattr(self, "metrics"):
+            self.metrics = {}
+        self.metrics[key] = self.metrics.get(key, 0) + amount
+
     def move_to(self, position: Any) -> Any:
         from fle.env import Position
 
+        self._note("move_requests")
         self.call("begin_move", self.position(position))
         state = self.wait()
         result = Position(**state["position"])
@@ -64,15 +70,22 @@ class FairActions:
         from fle.env import Position
 
         center = self.position(position)
+        self._note("approach_requests")
         result = json.loads(self.command(
             "local player = storage.fair.actor(); local prototype = prototypes.entity["
             + json.dumps(name) + "]; local box = prototype.selection_box; "
             "local target = helpers.json_to_table(" + json.dumps(json.dumps(center)) + "); "
+            "local entity = player.surface.find_entity(" + json.dumps(name) + ", target); "
+            "if entity and entity.valid and player.can_reach_entity(entity) then "
+            "rcon.print(helpers.table_to_json({reachable=true})); return end; "
             "target.x = target.x + math.max(math.abs(box.left_top.x), "
             "math.abs(box.right_bottom.x)) + 1.5; "
             "local position = player.surface.find_non_colliding_position('character', target, 8, 0.25); "
             "assert(position, 'No collision-free approach'); rcon.print(helpers.table_to_json(position))"
         ))
+        if result.get("reachable") is True:
+            self._note("approaches_skipped_in_reach")
+            return
         self.move_to(Position(**result))
 
     def harvest(self, resource: str, position: Any, quantity: int) -> int:
@@ -80,6 +93,7 @@ class FairActions:
 
         if type(quantity) is not int or quantity <= 0:
             raise ValueError("Mining quantity must be positive")
+        self._note("mining_batches_started")
         gained = 0
         for attempt in range(quantity):
             if gained == 0:
@@ -99,6 +113,7 @@ class FairActions:
             approach = self.call("mine_approach", target, resource)
             if not approach["reachable"]:
                 self.move_to(Position(**approach["position"]))
+            self._note("mining_starts")
             self.call("begin_mine", target, resource, quantity - gained)
             try:
                 result = self.wait()
@@ -107,6 +122,7 @@ class FairActions:
                 if result.get("error") != "Resource depleted before requested amount" or result["gained"] <= 0:
                     raise
             gained += result["gained"]
+            self._note("mined_items", result["gained"])
             if gained >= quantity:
                 return gained
         raise RuntimeError("Mining target budget exhausted")

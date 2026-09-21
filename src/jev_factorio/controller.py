@@ -36,7 +36,10 @@ class HierarchicalLoop(AgentLoop):
                  resume_controller: bool = False, confidence_floor: float = 0.45,
                  tick_seconds: float = 2.0, log_file: str | None = None,
                  max_request_bytes: int = 32000, max_pending_polls: int = 32,
-                 max_stalled_decisions: int = 4):
+                 max_stalled_decisions: int = 4, factory_scheduling: str = "serial"):
+        if factory_scheduling not in {"serial", "ready-work"}:
+            raise ValueError("Unknown factory scheduling policy")
+        self.factory_scheduling = factory_scheduling
         if policy not in {"jev", "deterministic", "hybrid"}:
             raise ValueError("Unknown campaign policy")
         if policy != "deterministic" and jev is None:
@@ -146,6 +149,12 @@ class HierarchicalLoop(AgentLoop):
             "usage": getattr(self.jev, "last_usage", None) if decision else None,
             "pending": self.memory.pending, "history": self.memory.history[-8:],
         }
+        if self.factory_scheduling != "serial":
+            record["factory_scheduling"] = self.factory_scheduling
+        fair = getattr(self.backend, "_fair", None)
+        metrics = getattr(fair, "metrics", None)
+        if isinstance(metrics, dict):
+            record["fair_action_metrics"] = dict(metrics)
         if self.log_file:
             self.log_file.parent.mkdir(parents=True, exist_ok=True)
             with self.log_file.open("a", encoding="utf-8") as stream:
@@ -262,6 +271,20 @@ class HierarchicalLoop(AgentLoop):
             self.memory.event("maintenance_required", reason="boiler fuel", tick=snapshot.tick)
             self._clear_plan()
             return self._record(snapshot, "observe", "Replan a nonmutating wait to replenish boiler fuel")
+        if (self.factory_scheduling == "ready-work" and self.catalog is not None
+                and self.memory.status == "running" and pending.get("dispatch") == "returned"
+                and step.action == "factory_wait" and step.effect == "machine_output"):
+            candidates, _ = self._compile_candidates(snapshot)
+            ready = [candidate for candidate in candidates
+                     if self.memory.failures.get(candidate.id, 0) < 2
+                     and candidate.steps[0].action != "factory_wait"
+                     and candidate.steps[0].allowed(snapshot)
+                     and not candidate.steps[0].satisfied(snapshot)]
+            if ready:
+                self.memory.event("passive_wait_yielded", plan=plan.id,
+                                  candidates=[candidate.id for candidate in ready], tick=snapshot.tick)
+                self._clear_plan()
+                return self._record(snapshot, "observe", "Yield passive machine wait to ready work")
         pending["polls"] += 1
         expired = (snapshot.tick - pending["started_tick"] >= step.timeout_ticks
                    or pending["polls"] >= self.max_pending_polls)
@@ -280,6 +303,24 @@ class HierarchicalLoop(AgentLoop):
             self.backend.act("idle")
         return self._record(snapshot, "observe", "Waiting for the in-flight postcondition")
 
+    def _compile_candidates(self, snapshot: GameSnapshot) -> tuple[list[Plan], str]:
+        if self.catalog is not None and self.memory.active_goal in {
+            "rocket_launch", "iron_smelting", "steam_power", "automation_science", "bootstrap_mining"
+        }:
+            if self.factory_scheduling == "ready-work":
+                from .planning.ready_work import compile_ready_factory
+
+                return compile_ready_factory(self.memory.active_goal, snapshot, self.catalog)
+            from .planning.factory import compile_factory
+
+            return compile_factory(self.memory.active_goal, snapshot, self.catalog)
+        return compile_plans(self.memory.active_goal, snapshot)
+
+    def _fallback_plan(self, plans: list[Plan]) -> Plan:
+        if self.factory_scheduling == "ready-work" and self.catalog is not None:
+            return plans[0]  # Preserve the compiler's critical-prerequisite priority.
+        return min(plans, key=lambda plan: (len(plan.steps), plan.id))
+
     def step(self) -> dict:
         self._decision = None
         snapshot = self._observe()
@@ -294,20 +335,13 @@ class HierarchicalLoop(AgentLoop):
         if self.terminal:
             return self._record(snapshot, "observe", self.memory.reason, verified=True)
         if self.memory.active_plan is None:
-            if self.catalog is not None and self.memory.active_goal in {
-                "rocket_launch", "iron_smelting", "steam_power", "automation_science", "bootstrap_mining"
-            }:
-                from .planning.factory import compile_factory
-
-                plans, blocker = compile_factory(self.memory.active_goal, snapshot, self.catalog)
-            else:
-                plans, blocker = compile_plans(self.memory.active_goal, snapshot)
+            plans, blocker = self._compile_candidates(snapshot)
             plans = [p for p in plans if self.memory.failures.get(p.id, 0) < 2]
             if not plans:
                 self.memory.status, self.memory.reason = "blocked", blocker or "Plan failure budget exhausted"
                 return self._record(snapshot, "observe", self.memory.reason)
             if self.policy == "deterministic":
-                chosen = min(plans, key=lambda p: (len(p.steps), p.id))
+                chosen = self._fallback_plan(plans)
                 self._decision = Decision(chosen.id, "deterministic")
             else:
                 facts = snapshot.for_jev()
@@ -317,6 +351,12 @@ class HierarchicalLoop(AgentLoop):
                     facts["factory"]["native_transfer_receipt_count"] = len(receipts)
                 state = {"facts": facts, "active_goal": asdict(GOALS[self.memory.active_goal]),
                          "history": self.memory.history[-8:]}
+                if self.factory_scheduling == "ready-work":
+                    state["production_scheduling"] = {
+                        "objective": "Advance the next production batch identified in plan descriptions",
+                        "guidance": "Prefer useful work while machines run; avoid tiny pickups and idle waits",
+                        "ultimate_goal": self.memory.active_goal,
+                    }
                 try:
                     self._decision = select_plan(self.jev, state, plans, self.confidence_floor,
                                                  self.max_request_bytes)
@@ -324,7 +364,7 @@ class HierarchicalLoop(AgentLoop):
                     self._decision = Decision(None, "observe", str(error))
                 chosen = next((p for p in plans if p.id == self._decision.plan_id), None)
                 if chosen is None and self.policy == "hybrid":
-                    chosen = min(plans, key=lambda plan: (len(plan.steps), plan.id))
+                    chosen = self._fallback_plan(plans)
                     self._decision.plan_id = chosen.id
                     self._decision.source = "deterministic-fallback"
                 if chosen is None:
