@@ -35,6 +35,12 @@ let mediaGeneration = 0;
 let mediaBusy = false;
 let sourceName = "NO SOURCE";
 let broadcast = new URLSearchParams(location.search).get("overlay") === "1";
+const studio = new URLSearchParams(location.search).get("studio") === "1";
+document.body.classList.toggle("studio", studio);
+if (studio) {
+  $("video-status").textContent = "OBS COMPOSITION";
+  $("video-resolution").textContent = "Video is supplied by a separate OBS source";
+}
 
 function notice(message, persistent = true) {
   if (persistent) userNotice = message || "";

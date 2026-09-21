@@ -76,6 +76,16 @@ files operationally; the producer does not impose a disk retention limit.
 
 ## Put the game in the window
 
+For a dense 1920×1080 OBS composition, open `/?studio=1` in the browser
+source. This keeps the game, candidate summary, workflow, observations and
+recent events on one canvas. It removes browser capture controls and labels
+the video region **OBS COMPOSITION**: place a separate native video source
+over that region. It does not claim a browser capture or grant permission.
+At 1920×1080, the video region is x=277, y=111, width=1342,
+height=754.875. Use a 16:9 game source with aspect-preserving fit; do not
+stretch a 4:3 game image. The normal browser layout and transparent
+`?overlay=1` HUD remain available.
+
 **Direct game capture:** click **Choose game window** or **Game window**, then
 select the Factorio window in the browser's capture picker. The browser, not
 this server, supplies the video. Permission is explicit and cannot be silently

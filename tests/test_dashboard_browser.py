@@ -133,6 +133,32 @@ def test_obs_camera_selection_and_stop(live):
     assert not errors
 
 
+def test_studio_layout_fits_broadcast_canvas_without_capture(live):
+    page, writer, url, errors = live
+    page.set_viewport_size({"width": 1920, "height": 1080})
+    page.goto(url + "/?studio=1")
+    seed(writer)
+    playwright.expect(page.locator("#candidate-count")).to_have_text("2 MODEL CANDIDATES")
+    playwright.expect(page.locator("#video-status")).to_have_text("OBS COMPOSITION")
+    playwright.expect(page.locator("#capture-placeholder")).not_to_be_visible()
+    assert page.evaluate("document.querySelector('#game-video').srcObject === null")
+    page.evaluate("notice('Legacy log: completed decisions only. In-flight timing is unavailable.')")
+    stage = page.locator("#game-stage").bounding_box()
+    assert stage["width"] > 1300
+    assert stage["width"] / stage["height"] == pytest.approx(16 / 9)
+    for selector in (".thinking", ".game-panel", ".candidates-panel", ".right-column", ".event-panel"):
+        bounds = page.locator(selector).bounding_box()
+        assert bounds["y"] >= 0
+        assert bounds["y"] + bounds["height"] <= 1080
+        assert bounds["height"] > 100
+    assert page.evaluate("document.documentElement.scrollHeight <= innerHeight")
+    page.keyboard.press("b")
+    playwright.expect(page.locator(".thinking")).not_to_be_visible()
+    page.keyboard.press("b")
+    playwright.expect(page.locator(".thinking")).to_be_visible()
+    assert not errors
+
+
 def test_untrusted_text_is_inert_and_export_is_display_only(live, tmp_path):
     page, writer, url, errors = live
     page.goto(url)

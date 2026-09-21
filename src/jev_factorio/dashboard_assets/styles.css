@@ -264,3 +264,55 @@ footer span:last-child{display:none}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
 }
 
+@media(min-width:1500px){
+body.studio:not(.broadcast){height:100vh;overflow:hidden;display:flex;flex-direction:column}
+body.studio:not(.broadcast) .topbar{height:48px;min-height:48px;padding:5px 12px;gap:24px}
+body.studio:not(.broadcast) .brand-mark{font-size:30px}
+body.studio:not(.broadcast) .brand-caption small{margin-top:2px}
+body.studio:not(.broadcast) .top-context strong{margin-top:2px}
+body.studio:not(.broadcast) .toolbar,body.studio:not(.broadcast) footer{display:none}
+body.studio:not(.broadcast) .notice{height:26px;min-height:26px;margin:4px 10px;padding:3px 10px;font-size:11px;line-height:18px;border-radius:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+body.studio:not(.broadcast) .notice[hidden]{display:block;visibility:hidden}
+body.studio:not(.broadcast) .workspace{flex:1;min-height:0;width:100%;max-width:none;margin:0;grid-template-columns:256px minmax(0,1fr) 280px;grid-template-rows:minmax(0,1fr) 220px;gap:10px;padding:0 10px 10px;align-items:stretch}
+body.studio:not(.broadcast) .thinking{grid-column:1;grid-row:1;min-height:0;padding:12px;overflow:auto}
+body.studio:not(.broadcast) .thinking h1{font-size:19px;margin-top:9px}
+body.studio:not(.broadcast) .intro{display:none}
+body.studio:not(.broadcast) .model-status{min-height:54px;padding:8px;margin:12px 0}
+body.studio:not(.broadcast) .section-title{margin:14px 0 7px}
+body.studio:not(.broadcast) .goal-node{padding-block:6px}
+body.studio:not(.broadcast) .observations div{padding:6px 0}
+body.studio:not(.broadcast) .boundary-note{margin-top:14px;padding-top:10px;font-size:9px}
+body.studio:not(.broadcast) .center-column{grid-column:2;grid-row:1/3;gap:8px;min-height:0}
+body.studio:not(.broadcast) .game-panel{flex:none}
+body.studio:not(.broadcast) .preview-heading{height:28px;padding:4px 10px}
+body.studio:not(.broadcast) .game-stage{min-height:0;aspect-ratio:16/9}
+body.studio:not(.broadcast) .capture-placeholder,body.studio:not(.broadcast) .capture-toolbar,body.studio:not(.broadcast) .video-bottom,body.studio:not(.broadcast) .game-overlay,body.studio:not(.broadcast) #fullscreen{display:none}
+body.studio:not(.broadcast) .inventory{padding:4px;min-height:40px}
+body.studio:not(.broadcast) .inventory>div{padding:0 8px}
+body.studio:not(.broadcast) .inventory strong{font-size:14px;margin-top:1px}
+body.studio:not(.broadcast) .candidates-panel{flex:1;min-height:0;display:flex;flex-direction:column}
+body.studio:not(.broadcast) .candidates-panel .panel-heading{padding:5px 10px}
+body.studio:not(.broadcast) .candidates-panel .panel-heading h2{display:none}
+body.studio:not(.broadcast) .table-scroll{flex:1;min-height:0;overflow:auto}
+body.studio:not(.broadcast) th,body.studio:not(.broadcast) td{padding:5px 9px}
+body.studio:not(.broadcast) .selection-summary{padding:5px 10px;flex:none;border-top:1px solid var(--line)}
+body.studio:not(.broadcast) .selection-summary .eyebrow{display:none}
+body.studio:not(.broadcast) .selection-summary strong{margin:0}
+body.studio:not(.broadcast) .right-column{grid-column:3;grid-row:1/3;gap:10px;min-height:0;overflow:auto}
+body.studio:not(.broadcast) .workflow-panel{padding:12px}
+body.studio:not(.broadcast) .workflow-panel>h2{font-size:17px;margin-top:8px}
+body.studio:not(.broadcast) .workflow-panel>p{margin-bottom:8px}
+body.studio:not(.broadcast) .workflow-node{padding:7px 5px}
+body.studio:not(.broadcast) .node-text strong{font-size:11px}
+body.studio:not(.broadcast) .source-link{margin-top:10px}
+body.studio:not(.broadcast) .verification,body.studio:not(.broadcast) .repair{padding:12px}
+body.studio:not(.broadcast) .verification-footer{padding-top:8px;margin-top:8px}
+body.studio:not(.broadcast) .event-panel{grid-column:1;grid-row:2;display:flex;flex-direction:column;min-height:0}
+body.studio:not(.broadcast) .event-header{padding:8px;gap:4px}
+body.studio:not(.broadcast) .event-header h2,body.studio:not(.broadcast) .event-header .eyebrow,body.studio:not(.broadcast) #event-filter{display:none}
+body.studio:not(.broadcast) .event-header:before{content:"RECENT EVENTS";font:9px var(--mono);color:var(--muted)}
+body.studio:not(.broadcast) .event-log{height:auto;min-height:0;flex:1;padding:0 8px}
+body.studio:not(.broadcast) .event-row{grid-template-columns:52px 1fr;gap:3px 6px;font-size:9px;padding:5px 0}
+body.studio:not(.broadcast) .event-row>:nth-child(3){grid-column:1/-1}
+body.studio:not(.broadcast) .event-duration{display:none}
+}
