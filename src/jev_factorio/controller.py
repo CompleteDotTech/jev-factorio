@@ -185,12 +185,44 @@ class HierarchicalLoop(AgentLoop):
         counts = snapshot.factory.get("force_entity_counts")
         costs = step.costs or {}
         reserved = self.memory.reservations.get(plan.id)
+        count = counts.get(kind, 0) if isinstance(counts, dict) else None
+        retained = all(snapshot.inventory.get(item, 0) >= quantity
+                       for item, quantity in costs.items())
+        connectors = snapshot.factory.get("connectors")
+        observed = connectors.get(kind) if isinstance(connectors, dict) else None
+        complete_connectors = bool(
+            isinstance(observed, list) and type(count) is int and len(observed) == count
+            and all(
+                isinstance(connector, dict)
+                and type(connector.get("unit_number")) is int
+                and connector["unit_number"] > 0
+                and isinstance(connector.get("position"), dict)
+                and type(connector["position"].get("x")) in {int, float}
+                and type(connector["position"].get("y")) in {int, float}
+                for connector in observed
+            )
+        )
+        fluid = parameters.get("fluid")
+        other_fluid_connectors = bool(
+            kind == "pipe" and count and complete_connectors
+            and isinstance(fluid, str) and fluid
+            and all(
+                isinstance(connector.get("fluid"), str)
+                and connector["fluid"] not in {"", fluid}
+                for connector in observed
+            )
+        )
         return bool(
             source in entities and target in entities and kind in {"pipe", "small-electric-pole"}
-            and isinstance(counts, dict) and counts.get(kind, 0) == 0
-            and costs and reserved == costs
-            and all(snapshot.inventory.get(item, 0) >= quantity
-                    for item, quantity in costs.items())
+            # A native zero count proves a first dispatch placed nothing.  When
+            # earlier pipes exist, complete per-entity telemetry may instead
+            # prove that every pipe carries another fluid.  Fair construction
+            # starts at the source endpoint, so a partial intended route would
+            # expose either the requested fluid or an empty new pipe.
+            and isinstance(counts, dict)
+            and type(count) is int and count >= 0
+            and set(costs) == {kind} and reserved == costs
+            and retained and (count == 0 or other_fluid_connectors)
         )
 
     def _verify_pending(self, snapshot: GameSnapshot) -> dict:
@@ -278,6 +310,7 @@ class HierarchicalLoop(AgentLoop):
                 facts = snapshot.for_jev()
                 if facts["factory"]:
                     receipts = facts["factory"].pop("receipts", {})
+                    facts["factory"].pop("connectors", None)
                     facts["factory"]["native_transfer_receipt_count"] = len(receipts)
                 state = {"facts": facts, "active_goal": asdict(GOALS[self.memory.active_goal]),
                          "history": self.memory.history[-8:]}
