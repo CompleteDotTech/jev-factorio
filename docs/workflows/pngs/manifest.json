@@ -1,0 +1,74 @@
+[
+  {
+    "source": "mmd/00-complete-workflow.mmd",
+    "png": "pngs/00-complete-workflow.png",
+    "width": 12057,
+    "height": 13271,
+    "scale": 0.8000345783479873,
+    "bytes": 2117201
+  },
+  {
+    "source": "mmd/01-campaign-supervision.mmd",
+    "png": "pngs/01-campaign-supervision.png",
+    "width": 2383,
+    "height": 4102,
+    "scale": 2,
+    "bytes": 281174
+  },
+  {
+    "source": "mmd/02-hierarchical-controller.mmd",
+    "png": "pngs/02-hierarchical-controller.png",
+    "width": 3790,
+    "height": 14002,
+    "scale": 2,
+    "bytes": 967710
+  },
+  {
+    "source": "mmd/03-goals-and-bootstrap.mmd",
+    "png": "pngs/03-goals-and-bootstrap.png",
+    "width": 5341,
+    "height": 2594,
+    "scale": 2,
+    "bytes": 316640
+  },
+  {
+    "source": "mmd/04-factory-dependency-planner.mmd",
+    "png": "pngs/04-factory-dependency-planner.png",
+    "width": 12044,
+    "height": 13286,
+    "scale": 1.8955172040423762,
+    "bytes": 1827079
+  },
+  {
+    "source": "mmd/05-jev-candidate-judgment.mmd",
+    "png": "pngs/05-jev-candidate-judgment.png",
+    "width": 2220,
+    "height": 8742,
+    "scale": 2,
+    "bytes": 546157
+  },
+  {
+    "source": "mmd/06-native-action-execution.mmd",
+    "png": "pngs/06-native-action-execution.png",
+    "width": 4719,
+    "height": 5752,
+    "scale": 2,
+    "bytes": 548802
+  },
+  {
+    "source": "mmd/07-pending-action-verification.mmd",
+    "png": "pngs/07-pending-action-verification.png",
+    "width": 2332,
+    "height": 5710,
+    "scale": 2,
+    "bytes": 387054
+  },
+  {
+    "source": "mmd/08-automatic-codex-repair.mmd",
+    "png": "pngs/08-automatic-codex-repair.png",
+    "width": 2351,
+    "height": 7114,
+    "scale": 2,
+    "bytes": 462172
+  }
+]
