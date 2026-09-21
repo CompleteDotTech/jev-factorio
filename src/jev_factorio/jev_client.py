@@ -34,7 +34,9 @@ class JevClient:
             # SDKs retry with backoff automatically; raw path should too.
             raise RuntimeError(f"Jev busy ({resp.status_code}); back off and retry")
         resp.raise_for_status()
-        return resp.json()["answers"]
+        body = resp.json()
+        self.last_usage = body.get("usage")
+        return body["answers"]
 
 
 class MockJevClient:

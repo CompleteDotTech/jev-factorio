@@ -19,10 +19,66 @@ PYTHONPATH=src python -m jev_factorio --backend mock --steps 8 --tick-seconds 0
 With a real key (`TYPESAFE_API_KEY` in the environment) the same loop calls
 `jev-latest` at `https://api.typesafe.ai/v1/systemone`.
 
+## Local configuration
+
+The CLI loads `.env` from the current working directory before reading settings.
+Run from the repository root and set `TYPESAFE_API_KEY` in that file.
+Exported environment variables take precedence. `.env` is ignored by Git;
+keep its permissions restricted (`chmod 600 .env`) and never commit credentials.
+Re-run `pip install -e .` after updating to install the dotenv dependency.
+
+`--backend mock` simulates the game but still uses a configured API key.
+For a fully offline run, override all provider credentials:
+
+```bash
+TYPESAFE_API_KEY= CLOUDFLARE_API_TOKEN= PYTHONPATH=src python -m jev_factorio --backend mock --steps 8 --tick-seconds 0
+```
+
 ## Layout
 
 - `src/jev_factorio/state.py` - GameSnapshot + compact Jev-facing state
 - `src/jev_factorio/questions.py` - typed question builders + candidate-action filter
 - `src/jev_factorio/jev_client.py` - SDK/HTTP client + offline MockJevClient
 - `src/jev_factorio/loop.py` - observe -> ask -> gate on confidence -> act
-- `src/jev_factorio/backends/` - mock (working), play_api (skeleton), fle (skeleton)
+- `src/jev_factorio/backends/` - mock, dedicated-world FLE adapter, play_api (skeleton)
+
+## Live Factorio
+
+Install the optional adapter with `pip install -e '.[fle]'`. Configure the
+`FACTORIO_RCON_*` variables in `.env` and keep the RCON connection private.
+Only use a dedicated, disposable agent world: starting the adapter resets
+characters, inventory, and factory entities. It refuses to start unless that
+world has been explicitly marked through RCON:
+
+```lua
+/sc storage.jev_factorio_session = true
+```
+
+Save the marked world before starting the adapter, and configure the server to
+load that save on restart. Never mark a personal gameplay world.
+
+```bash
+.venv/bin/python -m jev_factorio --backend fle --steps 12 \
+  --tick-seconds 2 --log-file runs/native.jsonl
+```
+
+This bootstrap gathers coal, places an iron drill and output chest, and fuels
+production. FLE uses accelerated movement rather than keyboard/mouse controls.
+Decision logs distinguish Jev choices from confidence-gated scripted fallbacks.
+FLE's executable Lua state stays in a session-only table, not Factorio's saved
+`storage`, so saving does not try to serialize functions. Saved factories persist,
+but the agent session does not resume across server reloads; starting another run
+resets the dedicated world again. Keep the viewer connected before initializing
+the agent; reconnecting viewers during a session is not yet validated.
+
+To continue a live agent session for 12 hours instead of a fixed number of steps:
+
+```bash
+.venv/bin/python -u -m jev_factorio --backend fle --resume \
+  --duration-hours 12 --tick-seconds 2 --log-file runs/12-hour.jsonl
+```
+
+`--resume` refuses to reset if the live session is missing. Duration mode stops
+starting decisions at its monotonic deadline; an in-flight decision may finish
+afterward. It makes ongoing API calls and remains limited to the bootstrap
+actions above, not full-game progression.

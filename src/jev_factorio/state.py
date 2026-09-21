@@ -20,6 +20,9 @@ class GameSnapshot:
     power_satisfaction: float = 1.0   # 1.0 = full, burner stage has no electric network
     craft_queue: list[str] = field(default_factory=list)
     alerts: list[str] = field(default_factory=list)  # e.g. "drill out of fuel"
+    drill_status: str = ""
+    drill_fuel: int = 0
+    iron_ore_collected: int = 0
 
     def for_jev(self) -> dict:
         """Compact structured state sent to Jev."""

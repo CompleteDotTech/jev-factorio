@@ -12,13 +12,13 @@ dependencies = [
     # Uncomment when you have a key (TypeSafe console, or route via Vercel AI Gateway).
     # "typesafe-sdk",
     "requests>=2.31",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
 fle = [
-    # Factorio Learning Environment backend (MIT):
-    # https://github.com/JackHopkins/factorio-learning-environment
-    # "factorio-learning-environment",
+    "factorio-learning-environment==0.4.3",
+    "a2a-sdk>=0.3,<1",
 ]
 
 [project.scripts]

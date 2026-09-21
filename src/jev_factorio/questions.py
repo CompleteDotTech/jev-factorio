@@ -40,8 +40,11 @@ def build_questions(snapshot: GameSnapshot) -> dict:
         "next_action": {
             "type": "choice",
             "instructions": (
-                "Pick the single best next action. Only choose from the options; "
-                "pick `idle` if the current plan is already progressing."
+                "Bootstrap iron mining: first gather at least 5 coal, then move to iron, "
+                "place the burner drill, and fuel it. Do not return to coal when enough "
+                "fuel is already in inventory. Placement also adds an output chest. "
+                "Choose idle once the drill is working and iron is accumulating. "
+                "Only choose an action from the supplied options."
             ),
             "criteria": {k: ACTION_RUBRIC[k] for k in candidates},
         },
@@ -68,15 +71,15 @@ def _candidate_actions(snapshot: GameSnapshot) -> list[str]:
     inv = snapshot.inventory
     near = snapshot.nearby_resources
     here = {name for name, dist in near.items() if dist <= 0.5}
-    if "iron-ore" in near:
+    if "iron-ore" in near and "iron-ore" not in here:
         cands.append("walk_to_iron")
-    if "coal" in near:
+    if "coal" in near and "coal" not in here:
         cands.append("walk_to_coal")
     if "iron-ore" in here:
         cands.append("mine_iron")
     if "coal" in here:
         cands.append("mine_coal")
-    if inv.get("burner-mining-drill", 0) > 0 and here:
+    if inv.get("burner-mining-drill", 0) > 0 and "iron-ore" in here:
         cands.append("place_burner_drill")
     if any(e.startswith("burner-mining-drill") for e in snapshot.placed_entities) \
             and inv.get("coal", 0) > 0:
