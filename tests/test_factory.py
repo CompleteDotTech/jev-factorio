@@ -319,6 +319,42 @@ def test_lua_fluid_branch_uses_the_matching_native_segment():
     assert lua.eval("next(observed)") is None
 
 
+def test_lua_observation_counts_force_entities_without_mutation():
+    lua = pytest.importorskip("lupa.lua54").LuaRuntime()
+    lua.execute("""
+        observations = 0
+        local force = {
+            rockets_launched = 0, technologies = {}, current_research = nil,
+            research_progress = 0,
+            get_item_production_statistics = function()
+                return {get_input_count = function() return 0 end}
+            end
+        }
+        pump = {valid = true, name = "offshore-pump"}
+        local surface = {
+            find_entities_filtered = function(filter)
+                assert(filter.force == force)
+                observations = observations + 1
+                return {pump}
+            end
+        }
+        local agent = {valid = true, force = force, surface = surface}
+        player = {connected = true, character = agent, crafting_queue_size = 0}
+        storage = {agent_characters = {agent}}
+        prototypes = {item = {}}
+        game = {tick = 12, get_player = function() return player end}
+    """)
+    lua.execute(files("jev_factorio").joinpath("lua/factory.lua").read_text())
+    lua.execute("""
+        local observed = storage.campaign.observe()
+        assert(observed.force_entity_counts["offshore-pump"] == 1)
+        assert(observations == 1)
+        assert(pump.valid and pump.name == "offshore-pump")
+        assert(next(storage.campaign.entities) == nil)
+        assert(next(storage.campaign.receipts) == nil)
+    """)
+
+
 def test_research_supplies_native_lab_costs_before_waiting():
     data = catalog()
     data.technologies["automation"] = {
@@ -529,3 +565,98 @@ def test_model_context_omits_receipt_bodies_without_losing_audit_evidence(tmp_pa
     assert model_factory["native_transfer_receipt_count"] == 1
     assert record["state"]["factory"]["receipts"] == {"prior": {"quantity": 5}}
     assert backend.state.factory["receipts"] == {"prior": {"quantity": 5}}
+
+
+def test_ambiguous_placement_reconciles_from_native_absence_before_retry(tmp_path):
+    class LostPlacement(FactorySimulation):
+        def __init__(self):
+            super().__init__()
+            self.lose_placement = True
+            self.state.factory["force_entity_counts"] = {"stone-furnace": 0}
+
+        def execute(self, action, parameters):
+            if action == "factory_place" and self.lose_placement:
+                self.actions.append((action, deepcopy(parameters)))
+                self.lose_placement = False
+                raise RuntimeError("Synthetic placement failed before native construction")
+            result = super().execute(action, parameters)
+            if action == "factory_place":
+                name = parameters["name"]
+                self.state.factory["force_entity_counts"][name] = 1
+            return result
+
+    backend = LostPlacement()
+    checkpoint = tmp_path / "checkpoint.json"
+    first = HierarchicalLoop(
+        backend, policy="deterministic", target="iron_smelting",
+        checkpoint=str(checkpoint), tick_seconds=0,
+    )
+    first.step()
+    first.step()
+    record = first.step()
+    assert record["outcome"] == "Ambiguous dispatch; verification required"
+    assert first.memory.pending["dispatch"] == "ambiguous"
+
+    resumed = HierarchicalLoop(
+        backend, policy="deterministic", target="iron_smelting",
+        checkpoint=str(checkpoint), resume_controller=True, tick_seconds=0,
+    )
+    actions_before = list(backend.actions)
+    record = resumed.step()
+    assert record["action"] == "reconcile"
+    assert record["status"] == "running"
+    assert backend.actions == actions_before
+    assert resumed.memory.pending is None
+    assert resumed.memory.active_plan is None
+    assert resumed.memory.reservations == {}
+    assert resumed.memory.failures == {"factory:factory_place:recipe:iron-plate": 1}
+
+    record = resumed.step()
+    assert record["verified"] is True
+    assert sum(action == "factory_place" for action, _ in backend.actions) == 2
+    assert backend.state.inventory["stone-furnace"] == 0
+    assert backend.state.factory["force_entity_counts"]["stone-furnace"] == 1
+
+
+@pytest.mark.parametrize("observation,retained_material", [
+    ({}, True),
+    ({"force_entity_counts": {"stone-furnace": 1}}, True),
+    ({"force_entity_counts": {"stone-furnace": 0}}, False),
+])
+def test_ambiguous_placement_stays_pending_without_absence_proof(
+    tmp_path, observation, retained_material
+):
+    class LostPlacement(FactorySimulation):
+        def act(self, action):
+            assert action == "idle"
+            return "Synthetic observation wait"
+
+        def execute(self, action, parameters):
+            if action == "factory_place":
+                self.actions.append((action, deepcopy(parameters)))
+                raise RuntimeError("Synthetic ambiguous placement")
+            return super().execute(action, parameters)
+
+    backend = LostPlacement()
+    backend.state.factory.update(observation)
+    checkpoint = tmp_path / "checkpoint.json"
+    controller = HierarchicalLoop(
+        backend, policy="deterministic", target="iron_smelting",
+        checkpoint=str(checkpoint), tick_seconds=0,
+    )
+    controller.step()
+    controller.step()
+    controller.step()
+    if not retained_material:
+        backend.state.inventory["stone-furnace"] = 0
+    actions_before = list(backend.actions)
+
+    resumed = HierarchicalLoop(
+        backend, policy="deterministic", target="iron_smelting",
+        checkpoint=str(checkpoint), resume_controller=True, tick_seconds=0,
+    )
+    record = resumed.step()
+    assert record["action"] == "observe"
+    assert resumed.memory.pending["dispatch"] == "ambiguous"
+    assert resumed.memory.active_plan is not None
+    assert backend.actions == actions_before

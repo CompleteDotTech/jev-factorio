@@ -52,6 +52,12 @@ end
 campaign.observe = function()
     local agent = storage.agent_characters[1]
     local force = agent.force
+    local force_entity_counts = {}
+    for _, entity in pairs(agent.surface.find_entities_filtered{force = force}) do
+        if entity.valid then
+            force_entity_counts[entity.name] = (force_entity_counts[entity.name] or 0) + 1
+        end
+    end
     local researched = {}
     for name, technology in pairs(force.technologies) do
         if technology.researched then table.insert(researched, name) end
@@ -125,6 +131,7 @@ campaign.observe = function()
     return {
         tick = game.tick,
         entities = entities,
+        force_entity_counts = force_entity_counts,
         receipts = campaign.receipts,
         connections = campaign.connections,
         researched = researched,
