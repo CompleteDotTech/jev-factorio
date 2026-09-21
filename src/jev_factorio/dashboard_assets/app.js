@@ -3,7 +3,7 @@
 const $ = (id) => document.getElementById(id);
 const object = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
 const array = (value) => Array.isArray(value) ? value : [];
-const text = (value, fallback = "—") => typeof value === "string" || typeof value === "number" ? String(value) : fallback;
+const text = (value, fallback = "—") => ["string", "number", "boolean"].includes(typeof value) ? String(value) : fallback;
 const number = (value, places = 2) => typeof value === "number" && Number.isFinite(value) ? value.toFixed(places) : "—";
 const short = (value) => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat(undefined, {notation: "compact", maximumFractionDigits: 1}).format(value) : "—";
 const set = (id, value) => { $(id).textContent = text(value); };
@@ -25,8 +25,11 @@ const STAGES = [
 ];
 
 let userNotice = "";
+let telemetryNotice = "";
+let feedNotice = "";
 let latest = null;
 let displayed = null;
+let renderedKey = "";
 let connected = false;
 let frozen = false;
 let receivedAt = 0;
@@ -44,7 +47,8 @@ if (studio) {
 
 function notice(message, persistent = true) {
   if (persistent) userNotice = message || "";
-  const combined = persistent ? userNotice : [userNotice, message].filter(Boolean).join(" ");
+  else telemetryNotice = message || "";
+  const combined = [userNotice, telemetryNotice, feedNotice].filter(Boolean).join(" ");
   $("notice").hidden = !combined;
   set("notice", combined);
 }
@@ -90,6 +94,9 @@ function renderGoals(v) {
 }
 
 function renderCandidates(v) {
+  const focusedCandidate = document.activeElement?.dataset.candidateId;
+  const tableScroll = $("candidates").closest(".table-scroll");
+  const scrollTop = tableScroll.scrollTop;
   const decision = object(v.decision);
   const request = object(v.request);
   const candidates = object(request.candidates);
@@ -100,13 +107,15 @@ function renderCandidates(v) {
   const plan = object(v.plan);
   let entries = Object.entries(candidates).filter(([, value]) => value && typeof value === "object");
   if (!entries.length && typeof plan.id === "string") entries = [[plan.id, plan]];
-  set("candidate-count", `${entries.length} ${Object.keys(candidates).length ? "MODEL CANDIDATES" : "KNOWN PLANS"}`);
+  const legacy = displayed?.source?.mode === "legacy";
+  set("candidate-count", !entries.length && legacy ? "UNAVAILABLE IN LEGACY LOG" : `${entries.length} ${Object.keys(candidates).length ? "MODEL CANDIDATES" : "KNOWN PLANS"}`);
   const rows = entries.slice(0, 16).map(([id, candidate]) => {
     candidate = object(candidate);
     const selected = id === decision.plan_id || id === plan.id;
     const row = el("tr", selected ? "selected" : "");
     const title = el("td");
     const button = el("button");
+    button.dataset.candidateId = id;
     button.append(el("span", "candidate-title", text(candidate.description, id)), el("span", "candidate-id", id));
     button.addEventListener("click", () => inspect(id, "Captured candidate; quantities and parameters are evidence, not dashboard controls.", candidate));
     title.append(button);
@@ -123,10 +132,14 @@ function renderCandidates(v) {
   });
   if (!rows.length) {
     const row = el("tr");
-    const cell = el("td", "empty", "No candidate batch in this cycle. Deterministic alternatives are not invented.");
+    const cell = el("td", "empty", legacy ? "Candidate definitions were not captured by this legacy log." : "No candidate batch in this cycle. Deterministic alternatives are not invented.");
     cell.colSpan = 8; row.append(cell); rows.push(row);
   }
   $("candidates").replaceChildren(...rows);
+  tableScroll.scrollTop = scrollTop;
+  if (focusedCandidate !== undefined) {
+    Array.from($("candidates").querySelectorAll("button")).find((button) => button.dataset.candidateId === focusedCandidate)?.focus({preventScroll: true});
+  }
   set("selected-plan", text(plan.id, text(decision.plan_id, "No current committed plan")));
   set("selection-source", `${text(decision.source, "No new selection")} · ${Array.isArray(plan.steps) ? plan.steps.length + " bounded steps" : "no active plan"}${decision.reason ? " · " + text(decision.reason) : ""}`);
 }
@@ -149,8 +162,13 @@ function renderLog(data) {
   set("event-count", `${events.length} recent events`);
 }
 
+function snapshotKey(data) {
+  return JSON.stringify([data.view, data.events, data.source, data.supervisor]);
+}
+
 function render(data) {
   displayed = data;
+  renderedKey = snapshotKey(data);
   const v = object(data.view);
   const state = object(v.state);
   const supervision = object(data.supervisor);
@@ -204,19 +222,23 @@ function render(data) {
 function refreshStatus() {
   const data = object(frozen ? displayed : latest);
   const v = object(data.view);
-  const now = typeof data.server_time === "number" ? data.server_time + (performance.now() - receivedAt) / 1000 : Date.now() / 1000;
+  const clock = object(latest);
+  const now = typeof clock.server_time === "number" ? clock.server_time + (performance.now() - receivedAt) / 1000 : Date.now() / 1000;
   const age = typeof v.last_event_time === "number" ? Math.max(0, now - v.last_event_time) : null;
   const stale = age === null || age > 15 || data.source?.status === "unavailable";
   const ended = ["returned", "error"].includes(v.lifecycle);
-  const active = connected && !stale && !ended;
-  if (!active || frozen) for (let i = 2; i <= 7; i++) $(`stage-${i}`).classList.remove("active");
+  const heartbeatAge = (performance.now() - receivedAt) / 1000;
+  const transportFresh = connected && heartbeatAge <= 3;
+  const active = transportFresh && !stale && !ended;
+  for (let stage = 2; stage <= 7; stage++) $(`stage-${stage}`).classList.toggle("active", active && !frozen && v.stage === stage);
   $("connection-led").className = `led ${active ? "live" : "stale"}`;
-  set("connection", !connected ? "Reconnecting" : ended ? "Invocation ended" : stale ? "No recent telemetry" : "Feed connected");
+  set("connection", !connected ? "Reconnecting" : !transportFresh ? "Feed delayed" : ended ? "Invocation ended" : stale ? "No recent telemetry" : "Feed connected");
+  $("connection").title = receivedAt ? `Last transport snapshot ${Math.floor(heartbeatAge)}s ago. Game records update independently of this heartbeat.` : "No transport snapshot received.";
   set("freshness", age === null ? "No recorded events" : `${data.source?.mode === "legacy" ? "File modified" : "Last event"} ${age < 1 ? "just now" : Math.floor(age) + "s ago"}`);
-  const thinking = active && !frozen && v.model_busy === true;
+  const thinking = active && !frozen && data.source?.mode !== "legacy" && v.model_busy === true;
   $("signal").classList.toggle("active", thinking);
   set("thinking-status", frozen ? "Display frozen" : thinking ? "JEV is evaluating" : ended ? "Controller invocation ended" : stale ? "Awaiting fresh evidence" : text(v.kind, "Waiting for an agent").replaceAll("_", " "));
-  set("model-detail", thinking ? "Provider call in flight · no tokens invented" : v.response ? "Provider response captured · inspect acceptance" : "No model response in this cycle");
+  set("model-detail", data.source?.mode === "legacy" ? "Completed decision only · no in-flight telemetry" : thinking ? "Provider call in flight · no tokens invented" : v.response ? "Provider response captured · inspect acceptance" : "No model response in this cycle");
   const supervision = object(data.supervisor);
   const cutoff = supervision.session_match ? object(supervision.state).cutoff : null;
   if (typeof cutoff === "number" && Number.isFinite(cutoff)) {
@@ -238,8 +260,10 @@ function stopCapture() {
   $("capture-placeholder").hidden = false;
   $("stop-capture").disabled = true;
   $("video-led").className = "led";
-  set("video-status", "NO SOURCE");
-  set("video-resolution", "Capture permission required");
+  $("camera-devices").hidden = true;
+  $("camera-devices").replaceChildren();
+  set("video-status", studio ? "OBS COMPOSITION" : "NO SOURCE");
+  set("video-resolution", studio ? "Video is supplied by a separate OBS source" : "Capture permission required");
 }
 function updateVideoStatus() {
   if (!stream) return;
@@ -260,6 +284,10 @@ async function capture(kind) {
     const device = $("camera-devices").value;
     const incoming = kind === "window" ? await navigator.mediaDevices.getDisplayMedia({video: true, audio: false}) : await navigator.mediaDevices.getUserMedia({video: device ? {deviceId: {exact: device}} : true, audio: false});
     if (generation !== mediaGeneration) { incoming.getTracks().forEach((track) => track.stop()); return; }
+    if (!incoming.getVideoTracks().length) {
+      incoming.getTracks().forEach((track) => track.stop());
+      throw new DOMException("No video track", "NotFoundError");
+    }
     if (stream) stream.getTracks().forEach((track) => track.stop());
     stream = incoming;
     sourceName = kind === "window" ? "WINDOW CAPTURE" : "CAMERA / OBS";
@@ -270,17 +298,23 @@ async function capture(kind) {
     track.addEventListener("ended", () => { if (stream === incoming) stopCapture(); });
     track.addEventListener("mute", updateVideoStatus);
     track.addEventListener("unmute", updateVideoStatus);
-    try { await $("game-video").play(); } catch (error) { stopCapture(); throw error; }
+    try { await $("game-video").play(); } catch {
+      stopCapture();
+      notice("Video playback could not start. Check browser permissions and source availability.");
+      return;
+    }
     updateVideoStatus();
     notice("");
     if (kind === "camera") {
       const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+      if (generation !== mediaGeneration) return;
       const selected = track.getSettings().deviceId;
       $("camera-devices").replaceChildren(...devices.filter((d) => d.kind === "videoinput").map((d, i) => { const option = el("option", "", d.label || `Video device ${i + 1}`); option.value = d.deviceId; option.selected = d.deviceId === selected; return option; }));
       $("camera-devices").hidden = false;
       notice("Choose OBS Virtual Camera in the device list after starting it in OBS. The selected camera is previewed locally.");
     }
   } catch (error) {
+    if (generation !== mediaGeneration) return;
     const messages = {NotAllowedError: "Capture was cancelled or denied. No new source was connected.", NotFoundError: "No matching video device was found. Start OBS Virtual Camera, then try again.", NotReadableError: "The selected source could not be read. Check whether another application is using it.", OverconstrainedError: "That video device is unavailable. Select another device."};
     notice(messages[error?.name] || "Video capture could not start. Check browser permissions and source availability.");
   } finally { mediaBusy = false; }
@@ -313,15 +347,30 @@ window.addEventListener("keydown", (event) => {
 });
 setBroadcast(broadcast);
 renderGoals({});
-const events = new EventSource("/api/events");
-events.addEventListener("snapshot", (event) => {
-  try {
-    const parsed = JSON.parse(event.data);
-    if (!parsed || typeof parsed !== "object" || !parsed.source) throw new Error("shape");
-    latest = parsed; connected = true; receivedAt = performance.now();
-    if (!frozen) render(latest);
-  } catch { connected = false; notice("An invalid dashboard snapshot was rejected."); }
-});
-events.onerror = () => { connected = false; refreshStatus(); };
+let events = null;
+function connectEvents() {
+  if (events) events.close();
+  events = new EventSource("/api/events");
+  events.addEventListener("snapshot", (event) => {
+    try {
+      const parsed = JSON.parse(event.data);
+      if (!parsed || typeof parsed !== "object" || !parsed.source || typeof parsed.source !== "object" ||
+          Array.isArray(parsed.source) || !parsed.view || typeof parsed.view !== "object" ||
+          Array.isArray(parsed.view) || !Array.isArray(parsed.events) || !Number.isFinite(parsed.server_time)) throw new Error("shape");
+      latest = parsed; connected = true; receivedAt = performance.now();
+      if (feedNotice) { feedNotice = ""; notice(userNotice); }
+      if (!frozen && snapshotKey(latest) !== renderedKey) render(latest);
+      else refreshStatus();
+    } catch {
+      connected = false;
+      feedNotice = "An invalid dashboard snapshot was rejected.";
+      notice(userNotice);
+      refreshStatus();
+    }
+  });
+  events.onerror = () => { connected = false; refreshStatus(); };
+}
+connectEvents();
 setInterval(refreshStatus, 500);
-window.addEventListener("pagehide", () => { stopCapture(); events.close(); });
+window.addEventListener("pagehide", () => { stopCapture(); events.close(); connected = false; refreshStatus(); });
+window.addEventListener("pageshow", (event) => { if (event.persisted) connectEvents(); });

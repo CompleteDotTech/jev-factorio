@@ -80,7 +80,9 @@ For a dense 1920×1080 OBS composition, open `/?studio=1` in the browser
 source. This keeps the game, candidate summary, workflow, observations and
 recent events on one canvas. It removes browser capture controls and labels
 the video region **OBS COMPOSITION**: place a separate native video source
-over that region. It does not claim a browser capture or grant permission.
+under that transparent region, with the browser source above it in the OBS
+source stack. This keeps evidence dialogs visible above gameplay. It does
+not claim a browser capture or grant permission.
 At 1920×1080, the video region is x=277, y=111, width=1342,
 height=754.875. Use a 16:9 game source with aspect-preserving fit; do not
 stretch a 4:3 game image. The normal browser layout and transparent
@@ -154,6 +156,25 @@ video/gameplay. **Export view** downloads a redacted, bounded display snapshot;
 it is explicitly not a complete audit. The event selector filters up to 120
 recent boundary summaries. The interface supports narrow screens, keyboard
 focus and reduced-motion preferences.
+
+### Refresh and freshness
+
+The reader polls its selected file every 250 ms; the SSE connection sends a
+snapshot about every 500 ms. Those are transport intervals, not a promise of
+new game observations twice per second. Legacy files change only when the
+controller writes a completed decision, and a remote-file relay adds its own
+delivery delay. The freshness label uses the source record/file time, not the
+arrival of duplicate heartbeats.
+
+Unchanged heartbeats update the freshness clock without rebuilding candidate
+or event rows. Candidate keyboard focus survives evidence updates. Freezing
+the view freezes its evidence and exports, but the cutoff countdown and age
+of that evidence continue advancing. A transport silent for over three
+seconds is labelled **Feed delayed**; source evidence older than 15 seconds
+is labelled **No recent telemetry**. These are distinct from an ended
+controller invocation. Returning to a browser-cached page reconnects telemetry
+only. Leaving the page releases all capture tracks; the video preview stays
+stopped until the user starts capture again and grants any required permissions.
 
 ## Observer and transport contract
 
