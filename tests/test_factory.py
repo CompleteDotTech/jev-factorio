@@ -97,18 +97,56 @@ def test_smelting_never_inserts_ore_without_fuel():
 def test_raw_gather_commits_one_observed_fair_target_with_a_unique_postcondition():
     state = snapshot(inventory={"wood": 12},
                      nearby_resources={"wood": 0.65, "coal": 1, "stone": 1, "iron-ore": 1})
+    state.factory["fair_resource_targets"] = {"wood": {
+        "name": "tree-01", "surface_index": 1, "position": {"x": 3, "y": 4},
+    }}
 
     first = FactoryPlanner(catalog(), state, "rocket_launch")._need("wood", 20)
 
-    assert first.id == "factory:factory_gather:wood:target:13"
+    assert first.id == (
+        'factory:factory_gather:wood:target:13:site:'
+        '{"name":"tree-01","position":{"x":3.0,"y":4.0},"surface_index":1}'
+    )
     assert first.steps[0].parameters == {"resource": "wood", "quantity": 1}
     assert first.steps[0].threshold == 13
 
     state.inventory["wood"] = 13
     later = FactoryPlanner(catalog(), state, "rocket_launch")._need("wood", 20)
 
-    assert later.id == "factory:factory_gather:wood:target:14"
+    assert later.id == first.id.replace("target:13:", "target:14:")
     assert later.steps[0].parameters == {"resource": "wood", "quantity": 1}
+
+
+@pytest.mark.parametrize("changed_site", [
+    {"name": "tree-02"},
+    {"surface_index": 2},
+    {"position": {"x": 3, "y": 5}},
+])
+def test_wood_failure_budget_is_scoped_to_the_observed_native_site(changed_site):
+    state = snapshot(inventory={"wood": 12},
+                     nearby_resources={"wood": 0.65, "coal": 1, "stone": 1, "iron-ore": 1})
+    site = {"name": "tree-01", "surface_index": 1, "position": {"x": 3, "y": 4}}
+    state.factory["fair_resource_targets"] = {"wood": site}
+
+    first = FactoryPlanner(catalog(), state, "rocket_launch")._need("wood", 20)
+    repeated = FactoryPlanner(catalog(), state, "rocket_launch")._need("wood", 20)
+    assert repeated.id == first.id
+    state.factory["fair_resource_targets"] = {"wood": {**site, **changed_site}}
+    later = FactoryPlanner(catalog(), state, "rocket_launch")._need("wood", 20)
+
+    assert first.id != later.id
+    failures = {first.id: 2}
+    assert [plan.id for plan in (first, later) if failures.get(plan.id, 0) < 2] == [later.id]
+
+
+def test_wood_without_a_fair_native_identity_returns_to_observation():
+    state = snapshot(inventory={"wood": 12},
+                     nearby_resources={"wood": 0.65, "coal": 1, "stone": 1, "iron-ore": 1})
+
+    plan = FactoryPlanner(catalog(), state, "rocket_launch")._need("wood", 20)
+
+    assert plan.steps[0].action == "factory_explore"
+    assert plan.steps[0].parameters == {"radius": 12}
 
 
 def test_refueling_respects_the_remaining_native_fuel_stack_capacity():
@@ -280,7 +318,7 @@ def test_native_observation_admits_only_a_fair_native_wood_target(monkeypatch):
         _resources={},
         _tools=Tools(),
         _fair=SimpleNamespace(call=lambda *arguments: calls.append(arguments) or {
-            "position": {"x": 3, "y": 4}
+            "position": {"x": 3, "y": 4}, "name": "tree-01", "surface_index": 1,
         }),
     )
     monkeypatch.setattr(factory, "command", lambda script: (
@@ -294,6 +332,10 @@ def test_native_observation_admits_only_a_fair_native_wood_target(monkeypatch):
     assert calls == [("next_mine_target", "wood", 64)]
     assert factory.backend._resources["wood"] == fle.Position(x=3, y=4)
     assert observed.nearby_resources["wood"] == 5
+    assert observed.factory["fair_resource_targets"] == {
+        "wood": {"name": "tree-01", "surface_index": 1,
+                 "position": {"x": 3.0, "y": 4.0}}
+    }
 
 
 def test_native_observation_does_not_fall_back_to_stale_fle_wood(monkeypatch):
@@ -321,6 +363,53 @@ def test_native_observation_does_not_fall_back_to_stale_fle_wood(monkeypatch):
 
     assert "wood" not in factory.backend._resources
     assert "wood" not in observed.nearby_resources
+
+
+@pytest.mark.parametrize("invalid_site", [
+    {"name": None}, {"name": ""}, {"name": " "},
+    {"surface_index": None}, {"surface_index": 0}, {"surface_index": -1},
+    {"surface_index": True}, {"surface_index": 1.5},
+    {"position": {"x": True, "y": 4}},
+    {"position": {"x": float("inf"), "y": 4}},
+    {"position": {"x": 3, "y": float("nan")}},
+    {"position": {}},
+])
+def test_native_observation_rejects_wood_without_a_native_site(monkeypatch, invalid_site):
+    fle = pytest.importorskip("fle.env")
+
+    class Tools:
+        def nearest(self, resource):
+            assert resource is not fle.Resource.Wood
+            return fle.Position(x=9, y=7)
+
+    factory = object.__new__(NativeFactory)
+    factory.catalog = SimpleNamespace(version="2.0.77")
+    factory.backend = SimpleNamespace(
+        _drill=None,
+        _resources={},
+        _tools=Tools(),
+        _fair=SimpleNamespace(call=lambda *arguments: {
+            "position": {"x": 3, "y": 4}, "name": "tree-01", "surface_index": 1,
+            **invalid_site,
+        }),
+    )
+    monkeypatch.setattr(factory, "command", lambda script: (
+        '{"tick": 17, "entities": {}, "researched": [], '
+        '"rockets_launched": 0, "rocket_baseline": 0}'
+    ))
+
+    observed = factory.observe(snapshot(world_kind="fle", player_position=(0, 0)))
+
+    assert "wood" not in factory.backend._resources
+    assert "wood" not in observed.nearby_resources
+    assert "fair_resource_targets" not in observed.factory
+
+    state = snapshot(inventory={"wood": 12}, nearby_resources={"wood": 5})
+    state.factory["fair_resource_targets"] = {"wood": {
+        "position": {"x": 3, "y": 4}, "name": "tree-01", "surface_index": 1,
+        **invalid_site,
+    }}
+    assert FactoryPlanner(catalog(), state, "rocket_launch")._fair_wood_identity(13) is None
 
 
 def test_native_fluid_points_keep_typed_filters_and_boiler_steam_output():

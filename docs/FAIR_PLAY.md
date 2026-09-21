@@ -9,6 +9,11 @@ shortcuts.
   `walking_state` on actual game ticks. It does not relocate the character.
 - Mining selects the native resource and holds `mining_state`; inventory gains
   must come from the engine. Depleted targets can be approached and replaced.
+  Reachable resources are mined in place; otherwise the walking approach is on
+  the actor-facing side rather than beyond the resource. Wood failure budgets
+  use the observed surface, tree prototype and exact position because native
+  trees need not have a `unit_number`. A replacement at the same site retains
+  that site's failure budget.
 - Placement transfers an existing inventory stack into the cursor and uses
   `can_build_from_cursor` / `build_from_cursor`. It verifies an actual item debit
   and returns remaining cursor items. Obstructions are not removed by relocation.

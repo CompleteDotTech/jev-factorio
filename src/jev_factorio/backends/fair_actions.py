@@ -96,7 +96,9 @@ class FairActions:
                 target = self.call("next_mine_target", resource, 64).get("position")
                 if not isinstance(target, dict):
                     raise RuntimeError("No mineable resource observed near the walking actor")
-            self.approach(Position(**target))
+            approach = self.call("mine_approach", target, resource)
+            if not approach["reachable"]:
+                self.move_to(Position(**approach["position"]))
             self.call("begin_mine", target, resource, quantity - gained)
             try:
                 result = self.wait()
