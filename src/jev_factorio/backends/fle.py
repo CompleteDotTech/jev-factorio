@@ -42,6 +42,7 @@ class FleBackend:
         self._drill = None
         self._error = ""
         self._factory = None
+        self._fair = None
 
     def enable_factory(self) -> Catalog:
         from .native_factory import NativeFactory
@@ -127,13 +128,16 @@ class FleBackend:
         self._instance = DedicatedInstance(
             address=os.environ.get("FACTORIO_RCON_HOST", "127.0.0.1"),
             tcp_port=int(os.environ.get("FACTORIO_RCON_PORT", "27018")),
-            fast=True,
+            fast=False,
             inventory={"burner-mining-drill": 1, "wooden-chest": 1},
             all_technologies_researched=False,
             clear_entities=True,
             peaceful=True,
             reset_speed=1,
         )
+        from .fair_actions import FairActions
+
+        self._fair = FairActions(self)
 
     @property
     def _tools(self):
@@ -144,6 +148,7 @@ class FleBackend:
     def observe(self) -> GameSnapshot:
         from fle.env import Prototype, Resource
 
+        self._fair.call("observe")
         tools = self._tools
         raw = self._instance.rcon_client.send_command(
             "/sc local agent = storage.agent_characters[1]; "
@@ -201,20 +206,21 @@ class FleBackend:
                 return "Waiting for production"
             if action in ("walk_to_coal", "walk_to_iron"):
                 resource = "coal" if action == "walk_to_coal" else "iron-ore"
-                position = tools.move_to(self._resources[resource])
+                position = self._fair.move_to(self._resources[resource])
                 return f"Moved to {resource} at ({position.x}, {position.y})"
             if action in ("mine_coal", "mine_iron"):
                 resource = "coal" if action == "mine_coal" else "iron-ore"
-                amount = tools.harvest_resource(self._resources[resource], quantity=5)
+                amount = self._fair.harvest(resource, self._resources[resource], quantity=5)
                 return f"Harvested {amount} {resource}"
             if action == "place_burner_drill":
-                self._drill = tools.place_entity(
+                self._drill = self._fair.place_entity(
                     Prototype.BurnerMiningDrill,
                     direction=Direction.UP,
                     position=self._resources["iron-ore"],
                     exact=False,
                 )
-                tools.place_entity(Prototype.WoodenChest, position=self._drill.drop_position)
+                self._fair.place_entity(Prototype.WoodenChest, position=self._drill.drop_position,
+                                        direction=Direction.UP, exact=True)
                 return "Placed burner drill on iron with an output chest"
             if action == "fuel_drill":
                 if self._drill is None:
@@ -222,10 +228,11 @@ class FleBackend:
                 amount = min(5, tools.inspect_inventory().get("coal", 0))
                 if amount == 0:
                     raise ValueError("No coal in inventory")
-                tools.insert_item(Prototype.Coal, self._drill, quantity=amount)
+                self._fair.insert_item(Prototype.Coal, self._drill, quantity=amount)
                 return f"Fueled burner drill with {amount} coal"
             if action == "craft_stone_furnace":
-                tools.craft_item(Prototype.StoneFurnace, quantity=1)
+                self.enable_factory()
+                self._factory.call("craft", "stone-furnace", 1)
                 return "Crafted a stone furnace"
             raise ValueError(f"Unsupported action: {action}")
         except Exception as error:
