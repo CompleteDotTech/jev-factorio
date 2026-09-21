@@ -264,6 +264,65 @@ def test_native_pipe_connection_uses_generic_fluid_handler_points(monkeypatch):
     )]
 
 
+def test_native_observation_admits_only_a_fair_native_wood_target(monkeypatch):
+    fle = pytest.importorskip("fle.env")
+    calls = []
+
+    class Tools:
+        def nearest(self, resource):
+            assert resource is not fle.Resource.Wood
+            return fle.Position(x=9, y=7)
+
+    factory = object.__new__(NativeFactory)
+    factory.catalog = SimpleNamespace(version="2.0.77")
+    factory.backend = SimpleNamespace(
+        _drill=None,
+        _resources={},
+        _tools=Tools(),
+        _fair=SimpleNamespace(call=lambda *arguments: calls.append(arguments) or {
+            "position": {"x": 3, "y": 4}
+        }),
+    )
+    monkeypatch.setattr(factory, "command", lambda script: (
+        '{"tick": 17, "entities": {}, "researched": [], '
+        '"rockets_launched": 0, "rocket_baseline": 0}'
+    ))
+    state = snapshot(world_kind="fle", player_position=(0, 0))
+
+    observed = factory.observe(state)
+
+    assert calls == [("next_mine_target", "wood", 64)]
+    assert factory.backend._resources["wood"] == fle.Position(x=3, y=4)
+    assert observed.nearby_resources["wood"] == 5
+
+
+def test_native_observation_does_not_fall_back_to_stale_fle_wood(monkeypatch):
+    fle = pytest.importorskip("fle.env")
+
+    class Tools:
+        def nearest(self, resource):
+            assert resource is not fle.Resource.Wood
+            return fle.Position(x=9, y=7)
+
+    factory = object.__new__(NativeFactory)
+    factory.catalog = SimpleNamespace(version="2.0.77")
+    factory.backend = SimpleNamespace(
+        _drill=None,
+        _resources={},
+        _tools=Tools(),
+        _fair=SimpleNamespace(call=lambda *arguments: {}),
+    )
+    monkeypatch.setattr(factory, "command", lambda script: (
+        '{"tick": 17, "entities": {}, "researched": [], '
+        '"rockets_launched": 0, "rocket_baseline": 0}'
+    ))
+
+    observed = factory.observe(snapshot(world_kind="fle", player_position=(0, 0)))
+
+    assert "wood" not in factory.backend._resources
+    assert "wood" not in observed.nearby_resources
+
+
 def test_native_fluid_points_keep_typed_filters_and_boiler_steam_output():
     water = SimpleNamespace(x=1, y=2, type="water")
     steam = SimpleNamespace(x=3, y=4, type="steam")

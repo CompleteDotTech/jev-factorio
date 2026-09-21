@@ -165,6 +165,8 @@ def test_next_mining_target_uses_actor_position_and_skips_depleted_entities(fair
         local target = storage.fair.next_mine_target("wood", 64)
         assert(target.position.x == 31 and target.position.y == 0)
         assert(player.position.x == 30 and player.position.y == 0)
+        assert(not player.walking_state or not player.walking_state.walking)
+        assert(not player.mining_state or not player.mining_state.mining)
         assert(quantities.coal == 0)
     """)
 
