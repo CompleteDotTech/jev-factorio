@@ -206,13 +206,16 @@ def request(server, path, headers=None, method="GET"):
     return status, result, response_headers
 
 
-@pytest.mark.parametrize("path", ["/", "/app.js", "/styles.css", "/api/snapshot"])
+@pytest.mark.parametrize("path", ["/", "/app.js", "/styles.css", "/factory-steel.png", "/api/snapshot"])
 def test_http_assets_and_security_headers(server, path):
     status, raw, headers = request(server, path)
     assert status == 200 and raw
     assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
     assert headers["X-Content-Type-Options"] == "nosniff"
     assert "Access-Control-Allow-Origin" not in headers
+    if path == "/factory-steel.png":
+        assert headers["Content-Type"] == "image/png"
+        assert raw.startswith(b"\x89PNG\r\n\x1a\n")
 
 
 @pytest.mark.parametrize("path", ["/.env", "/../main.py", "/%2e%2e/main.py", "/api/execute", "/api/repair"])
@@ -240,7 +243,7 @@ def test_sse_initial_snapshot_and_reconnect(server):
 
 
 def test_no_runtime_dependencies_or_remote_frontend_assets():
-    for name in ("index.html", "styles.css", "app.js"):
+    for name in ("index.html", "styles.css", "app.js", "factory-steel.png"):
         assert (ASSETS / name).is_file()
     js = (ASSETS / "app.js").read_text()
     assert ".innerHTML" not in js and "eval(" not in js
