@@ -168,6 +168,9 @@ def test_next_mining_target_uses_actor_position_and_skips_depleted_entities(fair
             assert(filter.radius == 64)
             return {depleted, distant, nearby}
         end
+        player.update_selected_entity = function(position)
+            player.selected = position == nearby.position and nearby or distant
+        end
         local target = storage.fair.next_mine_target("wood", 64)
         assert(target.position.x == 31 and target.position.y == 0)
         assert(target.unit_number == nil)
@@ -185,6 +188,28 @@ def test_next_mining_target_enforces_fair_actor_invariants(fair_runtime):
         fair_runtime.execute('storage.fair.next_mine_target("wood", 64)')
     assert fair_runtime.eval("player.position.x") == 0
     assert fair_runtime.eval("quantities.coal") == 0
+
+
+def test_wood_target_skips_trunks_obscured_by_other_selection_boxes(fair_runtime):
+    fair_runtime.execute("""
+        local hidden = {
+            valid = true, minable = true, name = "dead-grey-trunk",
+            surface = {index = 1}, position = {x = 1, y = 0}
+        }
+        local visible = {
+            valid = true, minable = true, name = "tree-03",
+            surface = {index = 1}, position = {x = 2, y = 0}
+        }
+        surface.find_entities_filtered = function() return {hidden, visible} end
+        player.update_selected_entity = function() player.selected = visible end
+        local result = storage.fair.next_mine_target("wood", 64)
+        assert(result.position.x == 2 and result.name == "tree-03")
+        assert(requested_path == nil and quantities.coal == 0)
+        assert(not player.walking_state or not player.walking_state.walking)
+        assert(not player.mining_state or not player.mining_state.mining)
+        player.update_selected_entity = function() player.selected = nil end
+        assert(next(storage.fair.next_mine_target("wood", 64)) == nil)
+    """)
 
 
 def test_mining_rejects_remote_target_and_stops_if_reach_changes(fair_runtime):

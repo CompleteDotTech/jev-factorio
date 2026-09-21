@@ -14,6 +14,9 @@ shortcuts.
   use the observed surface, tree prototype and exact position because native
   trees need not have a `unit_number`. A replacement at the same site retains
   that site's failure budget.
+  Tree targeting probes native cursor selection and skips trunks obscured by
+  another entity's selection box. This changes selection only, not movement,
+  mining, entity state or inventory.
 - Placement transfers an existing inventory stack into the cursor and uses
   `can_build_from_cursor` / `build_from_cursor`. It verifies an actual item debit
   and returns remaining cursor items. Obstructions are not removed by relocation.
