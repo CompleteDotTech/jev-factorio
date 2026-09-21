@@ -1,5 +1,6 @@
 from copy import deepcopy
 from importlib.resources import files
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,7 +10,9 @@ from jev_factorio.planning.factory import FactoryPlanner, compile_factory
 from jev_factorio.skills import Plan, Step
 from jev_factorio.state import GameSnapshot
 from jev_factorio.controller import HierarchicalLoop
+from jev_factorio.backends.native_factory import NativeFactory
 from jev_factorio.jev_client import MockJevClient
+from jev_factorio.memory import CampaignMemory
 
 
 def recipe(name, ingredients, category="crafting", enabled=True, product=None):
@@ -201,6 +204,71 @@ def test_connections_require_live_topology_not_a_command_receipt():
     assert connected(state.factory, "source", "target", "pipe", "steam")
     state.factory["entities"]["target"]["electric_network_id"] = 4
     assert connected(state.factory, "source", "target", "small-electric-pole", "electricity")
+
+
+def test_native_pipe_connection_uses_generic_fluid_handler_points(monkeypatch):
+    fle = pytest.importorskip("fle.env")
+    pump = SimpleNamespace(
+        name="offshore-pump",
+        connection_points=[fle.Position(x=-36.5, y=-27.5)],
+        position=fle.Position(x=-36.5, y=-28.5),
+    )
+    boiler = SimpleNamespace(
+        name="boiler",
+        connection_points=[
+            fle.Position(x=-28.5, y=-27.5),
+            fle.Position(x=-24.5, y=-27.5),
+        ],
+        steam_output_point=fle.Position(x=-26.5, y=-29.5),
+        position=fle.Position(x=-26.5, y=-28),
+    )
+    connections = []
+    factory = object.__new__(NativeFactory)
+    factory.backend = SimpleNamespace(
+        _tools=SimpleNamespace(),
+        _fair=SimpleNamespace(connect=lambda *arguments: connections.append(arguments)),
+    )
+    monkeypatch.setattr(factory, "entity", lambda role: {
+        "utility:water": pump, "utility:boiler": boiler,
+    }[role])
+    monkeypatch.setattr(factory, "call", lambda *arguments: "{}")
+    prototype = SimpleNamespace(value=("pipe", object()))
+    monkeypatch.setattr(factory, "prototype", lambda name: prototype)
+
+    outcome = factory.execute("factory_connect", {
+        "source": "utility:water", "target": "utility:boiler",
+        "kind": "pipe", "fluid": "water",
+    })
+
+    assert outcome.startswith("Constructed pipe connection")
+    assert connections == [(
+        fle.Position(x=-36.5, y=-27.5), fle.Position(x=-28.5, y=-27.5),
+        prototype, "water",
+    )]
+
+
+def test_native_fluid_points_keep_typed_filters_and_boiler_steam_output():
+    water = SimpleNamespace(x=1, y=2, type="water")
+    steam = SimpleNamespace(x=3, y=4, type="steam")
+    entity = SimpleNamespace(
+        input_connection_points=[water, steam],
+        output_connection_points=[water, steam],
+        connection_points=[SimpleNamespace(x=9, y=9)],
+        steam_output_point=steam,
+    )
+
+    assert NativeFactory.fluid_connection_points(entity, "water", output=False) == [water]
+    assert NativeFactory.fluid_connection_points(entity, "water", output=True) == [water]
+    assert NativeFactory.fluid_connection_points(entity, "steam", output=True) == [steam]
+    with pytest.raises(ValueError, match="input fluid"):
+        NativeFactory.fluid_connection_points(entity, "crude-oil", output=False)
+
+
+def test_native_typed_output_does_not_treat_unknown_fluid_as_compatible():
+    unknown = SimpleNamespace(x=1, y=2, type="")
+    entity = SimpleNamespace(output_connection_points=[unknown])
+    with pytest.raises(ValueError, match="output fluid"):
+        NativeFactory.fluid_connection_points(entity, "water", output=True)
 
 
 def test_recipe_and_technology_cycles_block_before_actuation():
@@ -660,3 +728,90 @@ def test_ambiguous_placement_stays_pending_without_absence_proof(
     assert resumed.memory.pending["dispatch"] == "ambiguous"
     assert resumed.memory.active_plan is not None
     assert backend.actions == actions_before
+
+
+@pytest.mark.parametrize("change", [
+    "missing_counts", "existing_pipe", "spent_material", "changed_reservation", "missing_role",
+])
+def test_ambiguous_connection_reconciliation_fails_closed(change):
+    plan = Plan(
+        id="factory:factory_connect:", goal="rocket_launch", description="connect",
+        steps=[Step(
+            action="factory_connect", effect="connection", costs={"pipe": 41},
+            parameters={
+                "source": "utility:water", "target": "utility:boiler",
+                "kind": "pipe", "fluid": "water",
+            },
+        )],
+    )
+    state = snapshot(inventory={"pipe": 41})
+    state.factory["entities"] = {
+        "utility:water": machine("offshore-pump"),
+        "utility:boiler": machine("boiler"),
+    }
+    state.factory["force_entity_counts"] = {"pipe": 0}
+    controller = object.__new__(HierarchicalLoop)
+    controller.memory = CampaignMemory(
+        session_id="test-factory", target="rocket_launch", active_goal="rocket_launch",
+        active_plan=plan.to_dict(), pending={
+            "started_tick": 10, "polls": 97,
+            "action": "factory_connect", "dispatch": "ambiguous",
+        },
+        reservations={plan.id: {"pipe": 41}}, last_tick=10, status="uncertain",
+    )
+
+    assert controller._absent_ambiguous_connection(plan, plan.steps[0], state)
+    if change == "missing_counts":
+        state.factory.pop("force_entity_counts")
+    elif change == "existing_pipe":
+        state.factory["force_entity_counts"]["pipe"] = 1
+    elif change == "spent_material":
+        state.inventory["pipe"] = 40
+    elif change == "changed_reservation":
+        controller.memory.reservations[plan.id]["pipe"] = 40
+    elif change == "missing_role":
+        state.factory["entities"].pop("utility:water")
+    assert not controller._absent_ambiguous_connection(plan, plan.steps[0], state)
+
+
+def test_ambiguous_connection_reconciles_without_dispatching():
+    plan = Plan(
+        id="factory:factory_connect:", goal="rocket_launch", description="connect",
+        steps=[Step(
+            action="factory_connect", effect="connection", costs={"pipe": 41},
+            parameters={
+                "source": "utility:water", "target": "utility:boiler",
+                "kind": "pipe", "fluid": "water",
+            },
+        )],
+    )
+    state = snapshot(inventory={"pipe": 41})
+    state.factory["entities"] = {
+        "utility:water": machine("offshore-pump"),
+        "utility:boiler": machine("boiler"),
+    }
+    state.factory["force_entity_counts"] = {"pipe": 0}
+    controller = object.__new__(HierarchicalLoop)
+    controller.target = "rocket_launch"
+    controller.policy = "deterministic"
+    controller.jev = None
+    controller.log_file = None
+    controller.checkpoint = None
+    controller._decision = None
+    controller.memory = CampaignMemory(
+        session_id="test-factory", target="rocket_launch", active_goal="rocket_launch",
+        active_plan=plan.to_dict(), pending={
+            "started_tick": 10, "polls": 97,
+            "action": "factory_connect", "dispatch": "ambiguous",
+        },
+        reservations={plan.id: {"pipe": 41}}, last_tick=10, status="uncertain",
+    )
+
+    record = controller._verify_pending(state)
+
+    assert record["action"] == "reconcile"
+    assert record["status"] == "running"
+    assert controller.memory.pending is None
+    assert controller.memory.active_plan is None
+    assert controller.memory.reservations == {}
+    assert controller.memory.failures == {plan.id: 1}

@@ -17,6 +17,8 @@ shortcuts.
 - Pipes and poles follow a bounded collision-checked placement route and use the
   same walking/building primitives. Native fluid/electric topology still decides
   whether the connection succeeded; the command alone is not success evidence.
+  Pipe routes start and end at the nearest compatible FLE-observed fluid-handler
+  connection cells, including generic offshore-pump, boiler, and generator ports.
 - The adapter rejects disconnected/replaced characters, cheat mode, and game
   speed other than 1. A short renewed control lease stops input if the controller
   disappears. Path, progress, and observation timeouts fail closed.
