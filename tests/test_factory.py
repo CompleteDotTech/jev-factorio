@@ -389,6 +389,9 @@ def test_lua_transfers_conserve_items_and_reject_replay(capacity):
             force = {rockets_launched = 0}, position = {x = 0, y = 0},
             get_inventory = function() return inventory end
         }}}
+        storage.fair = {actor = function()
+            return {can_reach_entity = function() return true end}
+        end}
     """)
     lua.execute(files("jev_factorio").joinpath("lua/factory.lua").read_text())
     lua.globals().capacity = capacity

@@ -199,8 +199,8 @@ campaign.transfer = function(role, item, quantity, receipt, extracting)
     assert(not campaign.receipts[receipt], "Transfer receipt already exists")
     local agent = storage.agent_characters[1]
     local machine = entity_for(role)
-    assert((agent.position.x - machine.position.x)^2 +
-        (agent.position.y - machine.position.y)^2 <= 100, "Transfer is out of reach")
+    local player = storage.fair.actor()
+    assert(player.can_reach_entity(machine), "Transfer is out of reach")
     local source = extracting and
         (machine.get_output_inventory() or machine.get_inventory(defines.inventory.chest))
         or agent.get_inventory(defines.inventory.character_main)
@@ -237,6 +237,7 @@ campaign.bind_player = function()
 end
 
 campaign.craft = function(recipe_name, batches)
+    storage.fair.actor()
     local agent = storage.agent_characters[1]
     local player = game.get_player(1)
     assert(player and player.connected and player.character == agent,
@@ -257,6 +258,7 @@ end
 
 campaign.configure = function(role, recipe_name)
     local entity = entity_for(role)
+    assert(storage.fair.actor().can_reach_entity(entity), "Configuration is out of reach")
     local recipe = entity.force.recipes[recipe_name]
     assert(recipe and recipe.enabled, "Recipe is locked")
     assert(next(inventory(entity, defines.inventory.assembling_machine_input)) == nil,
@@ -266,6 +268,7 @@ campaign.configure = function(role, recipe_name)
 end
 
 campaign.research = function(name)
+    storage.fair.actor()
     local force = storage.agent_characters[1].force
     assert(not force.current_research or force.current_research.name == name,
         "Refusing to cancel unrelated research")
@@ -274,6 +277,7 @@ end
 
 campaign.launch = function(role)
     local silo = entity_for(role)
+    assert(storage.fair.actor().can_reach_entity(silo), "Rocket silo is out of reach")
     assert(silo.rocket_silo_status == defines.rocket_silo_status.rocket_ready,
         "Rocket is not ready")
     assert(silo.launch_rocket(), "Native rocket launch was refused")
