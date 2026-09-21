@@ -101,6 +101,42 @@ fair.observe = function()
     }
 end
 
+fair.find_build_site = function(name, center, radius)
+    local player = fair.actor()
+    assert(type(name) == "string" and prototypes.entity[name], "Unknown building prototype")
+    assert(type(center) == "table" and type(center.x) == "number"
+        and type(center.y) == "number", "Invalid build-site center")
+    assert(type(radius) == "number" and radius >= 0 and radius <= 32
+        and radius % 0.5 == 0, "Invalid build-site radius")
+    local directions = {
+        defines.direction.north, defines.direction.east,
+        defines.direction.south, defines.direction.west
+    }
+    local best, best_distance
+    local half_steps = radius * 2
+    for horizontal = -half_steps, half_steps do
+        for vertical = -half_steps, half_steps do
+            local position = {
+                x = center.x + horizontal / 2,
+                y = center.y + vertical / 2
+            }
+            local distance = horizontal * horizontal + vertical * vertical
+            for _, direction in ipairs(directions) do
+                if player.surface.can_place_entity{
+                    name = name, position = position, direction = direction,
+                    force = player.force,
+                    build_check_type = defines.build_check_type.manual
+                } and (not best or distance < best_distance) then
+                    best = {position = position, direction = direction}
+                    best_distance = distance
+                end
+            end
+        end
+    end
+    assert(best, "No ordinary build site")
+    return best
+end
+
 fair.place = function(name, position, direction)
     local player = fair.actor()
     assert(not player.surface.find_entity(name, position), "Building already exists")
