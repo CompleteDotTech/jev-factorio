@@ -5,6 +5,7 @@ use physical connections. Nothing here creates resources or unlocks research.
 """
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import asdict
 
@@ -73,13 +74,30 @@ class FactoryPlanner:
         return recipe, None
 
     def _fair_wood_identity(self, target: int) -> str | None:
-        """Return the identity of the exact tree admitted by fair observation."""
+        """Bind failures to a native tree site, including any replacement there."""
         targets = self.factory.get("fair_resource_targets")
         evidence = targets.get("wood") if isinstance(targets, dict) else None
-        unit_number = evidence.get("unit_number") if isinstance(evidence, dict) else None
-        if type(unit_number) is not int or unit_number <= 0:
+        if not isinstance(evidence, dict):
             return None
-        return f"wood:target:{target}:tree:{unit_number}"
+        name, surface_index = evidence.get("name"), evidence.get("surface_index")
+        position = evidence.get("position")
+        if (not isinstance(name, str) or not name.strip()
+                or type(surface_index) is not int or surface_index <= 0
+                or not isinstance(position, dict)):
+            return None
+        coordinates = [position.get(axis) for axis in ("x", "y")]
+        if any(type(value) not in {int, float} or not math.isfinite(value)
+               for value in coordinates):
+            return None
+        site = {
+            "name": name, "surface_index": surface_index,
+            "position": {
+                axis: float(value) if value else 0.0
+                for axis, value in zip(("x", "y"), coordinates)
+            },
+        }
+        identity = json.dumps(site, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        return f"wood:target:{target}:site:{identity}"
 
     def _need(self, item, amount, path=()):
         have = self.snapshot.inventory.get(item, 0)
@@ -104,20 +122,12 @@ class FactoryPlanner:
             identity = None
             if item == "wood":
                 identity = self._fair_wood_identity(target)
-                # The wood plan is authorized only by a live, read-only
-                # selector result.  Without an entity identity, retain the
-                # existing failure budget and ask the normal exploration path
-                # for a fresh observation rather than dispatching a cached
-                # coordinate.
                 if identity is None:
                     return self._explore(item)
             return self._plan(
                 "factory_gather", "inventory", item, target,
                 parameters={"resource": item, "quantity": quantity}, timeout=18000,
                 description=f"Gather {quantity} observed {item}; inventory target {target}",
-                # Wood failure budgets belong to the exact observed tree and
-                # postcondition.  Failed historical trees remain recorded and
-                # still suppress that exact native entity.
                 identity=identity,
             )
         recipe, prerequisite = self._recipe(item, path)

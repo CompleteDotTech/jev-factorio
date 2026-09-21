@@ -31,7 +31,10 @@ def fair_runtime():
             valid = true, unit_number = 9,
             prototype = {collision_box = {}, collision_mask = {}}
         }
-        resource = {valid = true, minable = true, unit_number = 9, position = {x = 2, y = 0}}
+        resource = {
+            valid = true, minable = true, name = "coal", surface = {index = 1},
+            position = {x = 2, y = 0}
+        }
         quantities = {coal = 0, pipe = 4}
         surface = {
             request_path = function(parameters)
@@ -154,7 +157,10 @@ def test_next_mining_target_uses_actor_position_and_skips_depleted_entities(fair
     fair_runtime.execute("""
         local depleted = {valid = true, minable = false, position = {x = 30, y = 0}}
         local distant = {valid = true, minable = true, position = {x = 45, y = 0}}
-        local nearby = {valid = true, minable = true, unit_number = 31, position = {x = 31, y = 0}}
+        local nearby = {
+            valid = true, minable = true, name = "tree-01", surface = {index = 1},
+            position = {x = 31, y = 0}
+        }
         player.position = {x = 30, y = 0}
         surface.find_entities_filtered = function(filter)
             assert(filter.type == "tree")
@@ -164,7 +170,8 @@ def test_next_mining_target_uses_actor_position_and_skips_depleted_entities(fair
         end
         local target = storage.fair.next_mine_target("wood", 64)
         assert(target.position.x == 31 and target.position.y == 0)
-        assert(target.unit_number == nearby.unit_number)
+        assert(target.unit_number == nil)
+        assert(target.name == "tree-01" and target.surface_index == 1)
         assert(player.position.x == 30 and player.position.y == 0)
         assert(not player.walking_state or not player.walking_state.walking)
         assert(not player.mining_state or not player.mining_state.mining)
@@ -316,7 +323,8 @@ def test_place_entity_uses_selected_direction_and_preserves_exact_direction(monk
     assert approaches[0][0] == Position(x=3, y=4)
 
 
-def test_harvest_reacquires_live_target_after_a_partial_native_yield(monkeypatch):
+@pytest.mark.parametrize("reachable", [True, False])
+def test_harvest_reacquires_live_target_after_a_partial_native_yield(monkeypatch, reachable):
     import sys
     import types
     from dataclasses import dataclass
@@ -343,23 +351,54 @@ def test_harvest_reacquires_live_target_after_a_partial_native_yield(monkeypatch
         calls.append((function, arguments))
         if function == "next_mine_target":
             return {"position": next(targets)}
+        if function == "mine_approach":
+            return {"reachable": reachable, "position": arguments[0]}
         if function == "begin_mine":
             return {}
         raise AssertionError(function)
 
     monkeypatch.setattr(fair, "call", call)
-    monkeypatch.setattr(fair, "approach",
+    monkeypatch.setattr(fair, "move_to",
                         lambda position: approaches.append(position))
     yields = iter(({"gained": 1}, {"gained": 1}))
     monkeypatch.setattr(fair, "wait", lambda: next(yields))
 
     assert fair.harvest("wood", Position(x=-999, y=-999), 2) == 2
     assert calls == [
+        ("mine_approach", ({"x": -999.0, "y": -999.0}, "wood")),
         ("begin_mine", ({"x": -999.0, "y": -999.0}, "wood", 2)),
         ("next_mine_target", ("wood", 64)),
+        ("mine_approach", ({"x": 3, "y": 4}, "wood")),
         ("begin_mine", ({"x": 3, "y": 4}, "wood", 1)),
     ]
-    assert approaches == [Position(x=-999.0, y=-999.0), Position(x=3, y=4)]
+    assert approaches == ([] if reachable else [
+        Position(x=-999.0, y=-999.0), Position(x=3, y=4),
+    ])
+
+
+def test_reachable_mining_target_does_not_request_movement(fair_runtime):
+    fair_runtime.execute("""
+        local result = storage.fair.mine_approach({x = 2, y = 0}, "wood")
+        assert(result.reachable == true and result.position == nil)
+        assert(requested_path == nil)
+        assert(player.position.x == 0 and player.position.y == 0)
+        assert(quantities.coal == 0)
+    """)
+
+
+def test_mining_approach_stays_on_near_side_of_tree(fair_runtime):
+    fair_runtime.execute("""
+        reachable = false
+        resource.position = {x = 10, y = 0}
+        player.surface.find_non_colliding_position = function(name, position)
+            assert(name == "character")
+            assert(position.x == 8.5 and position.y == 0)
+            return position
+        end
+        local result = storage.fair.mine_approach(resource.position, "wood")
+        assert(not result.reachable and result.position.x == 8.5)
+        assert(requested_path == nil and player.position.x == 0)
+    """)
 
 
 def test_failed_build_returns_all_cursor_items(fair_runtime):
