@@ -153,6 +153,25 @@ class HierarchicalLoop(AgentLoop):
         print(f"[t={before.tick}] {self.memory.status}: {action} -> {outcome}", flush=True)
         return record
 
+    def _absent_ambiguous_placement(self, plan: Plan, step, snapshot: GameSnapshot) -> bool:
+        """Prove that retrying an ambiguous placement cannot duplicate a building."""
+        pending = self.memory.pending or {}
+        if pending.get("dispatch") != "ambiguous" or step.action != "factory_place":
+            return False
+        parameters = step.parameters or {}
+        role, name = parameters.get("role"), parameters.get("name")
+        entities = snapshot.factory.get("entities", {})
+        counts = snapshot.factory.get("force_entity_counts")
+        costs = step.costs or {}
+        reserved = self.memory.reservations.get(plan.id)
+        return bool(
+            role and name and role not in entities
+            and isinstance(counts, dict) and counts.get(name, 0) == 0
+            and costs and reserved == costs
+            and all(snapshot.inventory.get(item, 0) >= quantity
+                    for item, quantity in costs.items())
+        )
+
     def _verify_pending(self, snapshot: GameSnapshot) -> dict:
         plan = Plan.from_dict(self.memory.active_plan)
         step = plan.steps[self.memory.step_index]
@@ -168,6 +187,13 @@ class HierarchicalLoop(AgentLoop):
                 self._clear_plan()
             self._refresh_goals(snapshot)
             return self._record(snapshot, "verify", "Observed expected postcondition", verified=True)
+        if self._absent_ambiguous_placement(plan, step, snapshot):
+            name = step.parameters["name"]
+            reason = (f"Observed no durable {name} placement and retained all reserved "
+                      "materials; replan without replaying the ambiguous dispatch")
+            self.memory.status = "running"
+            self._fail_plan(reason)
+            return self._record(snapshot, "reconcile", reason)
         boiler = snapshot.factory.get("entities", {}).get("utility:boiler", {})
         if step.action == "factory_wait" and boiler and boiler.get("fuel", {}).get("coal", 0) < 5:
             self.memory.event("maintenance_required", reason="boiler fuel", tick=snapshot.tick)
