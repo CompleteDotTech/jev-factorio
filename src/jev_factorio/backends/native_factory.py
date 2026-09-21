@@ -96,10 +96,19 @@ class NativeFactory:
                         "position": {"x": location.x, "y": location.y},
                     }
                 }
-        for name, resource in (
-            ("copper-ore", Resource.CopperOre), ("stone", Resource.Stone),
-            ("water", Resource.Water), ("crude-oil", Resource.CrudeOil),
-        ):
+        # Mineable raw resources use the same fair native admission as coal
+        # and iron.  Never revive a depleted FLE nearest-resource coordinate
+        # by falling back to its cache.
+        for name in ("copper-ore", "stone"):
+            try:
+                location = self.backend.native_mine_target(name)
+                self.backend._resources[name] = location
+                snapshot.nearby_resources[name] = math.hypot(
+                    location.x - snapshot.player_position[0], location.y - snapshot.player_position[1]
+                )
+            except Exception:
+                pass
+        for name, resource in (("water", Resource.Water), ("crude-oil", Resource.CrudeOil)):
             try:
                 location = self.backend._tools.nearest(resource)
                 self.backend._resources[name] = location

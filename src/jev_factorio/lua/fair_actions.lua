@@ -123,7 +123,7 @@ end
 fair.next_mine_target = function(item, radius)
     local player = fair.actor()
     assert(type(item) == "string", "Mining item must be a string")
-    assert(type(radius) == "number" and radius > 0 and radius <= 64,
+    assert(type(radius) == "number" and radius > 0 and radius <= 128,
         "Mining search radius is invalid")
     local filter = {position = player.position, radius = radius}
     if item == "wood" then filter.type = "tree" else filter.name = item end
@@ -134,8 +134,12 @@ fair.next_mine_target = function(item, radius)
             local vertical = entity.position.y - player.position.y
             local distance = horizontal * horizontal + vertical * vertical
             if not best or distance < best_distance then
-                if item == "wood" then player.update_selected_entity(entity.position) end
-                if item ~= "wood" or player.selected == entity then
+                -- Reject targets obscured by another entity before committing
+                -- an observation.  This only updates the normal cursor; it
+                -- does not walk, mine, transfer, or alter game speed.  The
+                -- later begin_mine call independently enforces normal reach.
+                player.update_selected_entity(entity.position)
+                if player.selected == entity then
                     best, best_distance = entity, distance
                 end
             end
