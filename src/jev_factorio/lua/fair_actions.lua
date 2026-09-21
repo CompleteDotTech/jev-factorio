@@ -134,7 +134,10 @@ fair.next_mine_target = function(item, radius)
             local vertical = entity.position.y - player.position.y
             local distance = horizontal * horizontal + vertical * vertical
             if not best or distance < best_distance then
-                best, best_distance = entity, distance
+                if item == "wood" then player.update_selected_entity(entity.position) end
+                if item ~= "wood" or player.selected == entity then
+                    best, best_distance = entity, distance
+                end
             end
         end
     end
