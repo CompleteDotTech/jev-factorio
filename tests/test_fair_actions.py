@@ -225,7 +225,7 @@ def test_build_site_search_checks_direction_without_moving_or_granting_items(fai
     """)
 
 
-def test_place_entity_uses_direction_selected_by_native_buildability(monkeypatch):
+def test_place_entity_uses_selected_direction_and_preserves_exact_direction(monkeypatch):
     import sys
     import types
     from dataclasses import dataclass
@@ -237,7 +237,8 @@ def test_place_entity_uses_direction_selected_by_native_buildability(monkeypatch
         y: float
 
     Direction = SimpleNamespace(
-        UP=SimpleNamespace(value=0), RIGHT=SimpleNamespace(value=4)
+        UP=SimpleNamespace(value=0), RIGHT=SimpleNamespace(value=4),
+        LEFT=SimpleNamespace(value=12),
     )
     Prototype = SimpleNamespace(
         OffshorePump=SimpleNamespace(value=("offshore-pump", object))
@@ -273,6 +274,16 @@ def test_place_entity_uses_direction_selected_by_native_buildability(monkeypatch
     )
     assert approaches[0][0] == Position(x=1.5, y=0)
     assert entity.position == Position(x=1.5, y=0)
+
+    calls.clear()
+    approaches.clear()
+    fair.place_entity(
+        Prototype.OffshorePump, Position(x=3, y=4), Direction.LEFT, exact=True
+    )
+    assert calls == [
+        ("place", ("offshore-pump", {"x": 3.0, "y": 4.0}, Direction.LEFT.value))
+    ]
+    assert approaches[0][0] == Position(x=3, y=4)
 
 
 def test_failed_build_returns_all_cursor_items(fair_runtime):

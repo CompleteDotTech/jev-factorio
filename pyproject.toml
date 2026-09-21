@@ -28,6 +28,10 @@ fle = [
     "factorio-learning-environment==0.4.3",
     "a2a-sdk>=0.3,<1",
 ]
+test = [
+    "pytest>=8,<10",
+    "lupa==2.8",
+]
 
 [project.urls]
 Homepage = "https://github.com/CompleteDotTech/jev-factorio"
