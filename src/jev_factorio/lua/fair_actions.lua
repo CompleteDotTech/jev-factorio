@@ -259,10 +259,6 @@ local previous_tick = script.get_event_handler(defines.events.on_tick)
 if previous_tick ~= fair.tick_handler then fair.previous_tick = previous_tick end
 fair.tick_handler = function(event)
     if fair.quarantined then fair.stop("Adapter attachment is not validated"); return end
-    if fair.previous_tick then
-        local succeeded = pcall(fair.previous_tick, event)
-        if not succeeded then fair.stop("Legacy tick handler failed"); return end
-    end
     local job = fair.job
     if not job or job.status == "failed" or job.status == "completed" then return end
     local ok, player = pcall(fair.actor)

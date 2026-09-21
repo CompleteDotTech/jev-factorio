@@ -46,6 +46,12 @@ def snapshot(**changes):
                                   "entities": {}, "receipts": {}, "produced": {}})
     for key, value in changes.items():
         setattr(state, key, value)
+    if state.world_kind == "mock":
+        state.factory.setdefault("fair_resource_targets", {
+            item: {"name": item, "surface_index": 1, "position": {"x": distance, "y": 0}}
+            for item, distance in state.nearby_resources.items()
+            if item in {"coal", "iron-ore", "copper-ore", "stone"}
+        })
     return state
 
 
@@ -147,6 +153,36 @@ def test_wood_without_a_fair_native_identity_returns_to_observation():
 
     assert plan.steps[0].action == "factory_explore"
     assert plan.steps[0].parameters == {"radius": 12}
+
+
+@pytest.mark.parametrize("item", ["coal", "iron-ore", "copper-ore", "stone"])
+def test_ore_failure_budget_preserves_site_and_inventory_target(item):
+    state = snapshot(inventory={item: 12}, nearby_resources={item: 5})
+    scheduler = FactoryPlanner(catalog(), state, "rocket_launch")
+    first = scheduler._need(item, 20)
+    repeated = FactoryPlanner(catalog(), state, "rocket_launch")._need(item, 20)
+    assert repeated.id == first.id
+    failures = {f"factory:factory_gather:{item}": 2, first.id: 2}
+    saved_failures = dict(failures)
+
+    state.factory["fair_resource_targets"][item]["position"]["x"] = 6
+    relocated = FactoryPlanner(catalog(), state, "rocket_launch")._need(item, 20)
+    assert relocated.id != first.id
+    assert failures.get(relocated.id, 0) == 0
+
+    changed_threshold = FactoryPlanner(catalog(), state, "rocket_launch")._need(item, 21)
+    assert changed_threshold.id != relocated.id
+    assert changed_threshold.steps[0].threshold == 21
+    assert failures == saved_failures
+    assert failures[repeated.id] == 2
+
+
+@pytest.mark.parametrize("item", ["coal", "iron-ore", "copper-ore", "stone"])
+def test_ore_cached_coordinate_without_native_site_cannot_authorize_gather(item):
+    state = snapshot(nearby_resources={item: 5})
+    state.factory.pop("fair_resource_targets")
+    candidate = FactoryPlanner(catalog(), state, "rocket_launch")._need(item, 20)
+    assert candidate.steps[0].action == "factory_explore"
 
 
 def test_refueling_respects_the_remaining_native_fuel_stack_capacity():
@@ -329,7 +365,10 @@ def test_native_observation_admits_only_a_fair_native_wood_target(monkeypatch):
 
     observed = factory.observe(state)
 
-    assert calls == [("next_mine_target", "wood", 64)]
+    assert calls == [
+        ("next_mine_target", item, 64 if item == "wood" else 128)
+        for item in ("wood", "coal", "iron-ore", "copper-ore", "stone")
+    ]
     assert factory.backend._resources["wood"] == fle.Position(x=3, y=4)
     assert observed.nearby_resources["wood"] == 5
     assert observed.factory["fair_resource_targets"] == {
@@ -338,7 +377,7 @@ def test_native_observation_admits_only_a_fair_native_wood_target(monkeypatch):
     }
 
 
-def test_native_observation_does_not_fall_back_to_stale_fle_wood(monkeypatch):
+def test_native_observation_does_not_fall_back_to_stale_fle_resources(monkeypatch):
     fle = pytest.importorskip("fle.env")
 
     class Tools:
@@ -350,7 +389,8 @@ def test_native_observation_does_not_fall_back_to_stale_fle_wood(monkeypatch):
     factory.catalog = SimpleNamespace(version="2.0.77")
     factory.backend = SimpleNamespace(
         _drill=None,
-        _resources={},
+        _resources={item: fle.Position(x=3, y=4)
+                    for item in ("wood", "coal", "iron-ore", "copper-ore", "stone")},
         _tools=Tools(),
         _fair=SimpleNamespace(call=lambda *arguments: {}),
     )
@@ -359,13 +399,18 @@ def test_native_observation_does_not_fall_back_to_stale_fle_wood(monkeypatch):
         '"rockets_launched": 0, "rocket_baseline": 0}'
     ))
 
-    observed = factory.observe(snapshot(world_kind="fle", player_position=(0, 0)))
+    observed = factory.observe(snapshot(
+        world_kind="fle", player_position=(0, 0),
+        nearby_resources={item: 5 for item in ("wood", "coal", "iron-ore", "copper-ore", "stone")},
+    ))
 
-    assert "wood" not in factory.backend._resources
-    assert "wood" not in observed.nearby_resources
+    for item in ("wood", "coal", "iron-ore", "copper-ore", "stone"):
+        assert item not in factory.backend._resources
+        assert item not in observed.nearby_resources
+    assert "fair_resource_targets" not in observed.factory
 
 
-def test_native_observation_uses_fair_admission_for_copper_and_stone(monkeypatch):
+def test_native_observation_uses_fair_site_admission_for_all_ores(monkeypatch):
     fle = pytest.importorskip("fle.env")
     requested = []
 
@@ -374,12 +419,16 @@ def test_native_observation_uses_fair_admission_for_copper_and_stone(monkeypatch
             assert resource in {fle.Resource.Water, fle.Resource.CrudeOil}
             return fle.Position(x=9, y=7)
 
-    def native_mine_target(resource):
+    def native_mine_target(function, resource, radius):
+        assert function == "next_mine_target"
+        assert radius == (64 if resource == "wood" else 128)
         requested.append(resource)
+        if resource == "wood":
+            return {}
         return {
-            "copper-ore": fle.Position(x=3, y=4),
-            "stone": fle.Position(x=6, y=8),
-        }[resource]
+            "name": resource, "surface_index": 1,
+            "position": {"x": 3, "y": 4},
+        }
 
     factory = object.__new__(NativeFactory)
     factory.catalog = SimpleNamespace(version="2.0.77")
@@ -387,8 +436,7 @@ def test_native_observation_uses_fair_admission_for_copper_and_stone(monkeypatch
         _drill=None,
         _resources={},
         _tools=Tools(),
-        _fair=SimpleNamespace(call=lambda *arguments: {}),
-        native_mine_target=native_mine_target,
+        _fair=SimpleNamespace(call=native_mine_target),
     )
     monkeypatch.setattr(factory, "command", lambda script: (
         '{"tick": 17, "entities": {}, "researched": [], '
@@ -397,13 +445,16 @@ def test_native_observation_uses_fair_admission_for_copper_and_stone(monkeypatch
 
     observed = factory.observe(snapshot(world_kind="fle", player_position=(0, 0)))
 
-    assert requested == ["copper-ore", "stone"]
-    assert observed.nearby_resources["copper-ore"] == 5
-    assert observed.nearby_resources["stone"] == 10
-    assert factory.backend._resources["copper-ore"] == fle.Position(x=3, y=4)
-    assert factory.backend._resources["stone"] == fle.Position(x=6, y=8)
+    assert requested == ["wood", "coal", "iron-ore", "copper-ore", "stone"]
+    for item in requested[1:]:
+        assert observed.nearby_resources[item] == 5
+        assert factory.backend._resources[item] == fle.Position(x=3, y=4)
+        assert observed.factory["fair_resource_targets"][item] == {
+            "name": item, "surface_index": 1, "position": {"x": 3.0, "y": 4.0},
+        }
 
 
+@pytest.mark.parametrize("item", ["wood", "coal", "iron-ore", "copper-ore", "stone"])
 @pytest.mark.parametrize("invalid_site", [
     {"name": None}, {"name": ""}, {"name": " "},
     {"surface_index": None}, {"surface_index": 0}, {"surface_index": -1},
@@ -413,7 +464,7 @@ def test_native_observation_uses_fair_admission_for_copper_and_stone(monkeypatch
     {"position": {"x": 3, "y": float("nan")}},
     {"position": {}},
 ])
-def test_native_observation_rejects_wood_without_a_native_site(monkeypatch, invalid_site):
+def test_native_observation_rejects_resource_without_a_native_site(monkeypatch, invalid_site, item):
     fle = pytest.importorskip("fle.env")
 
     class Tools:
@@ -428,7 +479,8 @@ def test_native_observation_rejects_wood_without_a_native_site(monkeypatch, inva
         _resources={},
         _tools=Tools(),
         _fair=SimpleNamespace(call=lambda *arguments: {
-            "position": {"x": 3, "y": 4}, "name": "tree-01", "surface_index": 1,
+            "position": {"x": 3, "y": 4},
+            "name": "tree-01" if item == "wood" else item, "surface_index": 1,
             **invalid_site,
         }),
     )
@@ -439,16 +491,17 @@ def test_native_observation_rejects_wood_without_a_native_site(monkeypatch, inva
 
     observed = factory.observe(snapshot(world_kind="fle", player_position=(0, 0)))
 
-    assert "wood" not in factory.backend._resources
-    assert "wood" not in observed.nearby_resources
+    assert item not in factory.backend._resources
+    assert item not in observed.nearby_resources
     assert "fair_resource_targets" not in observed.factory
 
-    state = snapshot(inventory={"wood": 12}, nearby_resources={"wood": 5})
-    state.factory["fair_resource_targets"] = {"wood": {
-        "position": {"x": 3, "y": 4}, "name": "tree-01", "surface_index": 1,
+    state = snapshot(inventory={item: 12}, nearby_resources={item: 5})
+    state.factory["fair_resource_targets"] = {item: {
+        "position": {"x": 3, "y": 4},
+        "name": "tree-01" if item == "wood" else item, "surface_index": 1,
         **invalid_site,
     }}
-    assert FactoryPlanner(catalog(), state, "rocket_launch")._fair_wood_identity(13) is None
+    assert FactoryPlanner(catalog(), state, "rocket_launch")._fair_resource_identity(item, 13) is None
 
 
 def test_native_fluid_points_keep_typed_filters_and_boiler_steam_output():
