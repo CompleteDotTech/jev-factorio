@@ -744,6 +744,62 @@ def test_research_supplies_native_lab_costs_before_waiting():
     assert state.factory["research"] == "logistics"
 
 
+def test_research_wait_failure_budget_is_scoped_to_observed_progress_and_supplies():
+    data = catalog()
+    data.technologies["automation"] = {
+        "enabled": True, "prerequisites": [], "effects": [],
+        "count": 100, "energy_ticks": 600,
+        "ingredients": [
+            {"name": "automation-science-pack", "amount": 1},
+            {"name": "logistic-science-pack", "amount": 1},
+        ],
+    }
+    state = snapshot()
+    state.factory["research"] = "automation"
+    state.factory["entities"] = {
+        "utility:water": machine("offshore-pump", fluid_ports=[{"id": 1, "fluid": "water"}]),
+        "utility:boiler": machine("boiler", fuel={"coal": 10},
+                                  fluid_ports=[{"id": 1, "fluid": "water"},
+                                               {"id": 2, "fluid": "steam"}]),
+        "utility:engine": machine("steam-engine", electric_network_id=1,
+                                  fluid_ports=[{"id": 2, "fluid": "steam"}]),
+        "utility:lab": machine(
+            "lab", electric_network_id=1,
+            input={"automation-science-pack": 1, "logistic-science-pack": 1},
+        ),
+    }
+
+    first = FactoryPlanner(data, state, "rocket_launch")._research("automation")
+    assert first.steps[0].action == "factory_wait"
+    assert first.id == (
+        "factory:factory_wait:automation:progress:0:supplies:"
+        "automation-science-pack=1,logistic-science-pack=1"
+    )
+
+    # A failed no-progress wait remains rejected for that same observed epoch.
+    failures = {first.id: 2}
+    repeated = FactoryPlanner(data, state, "rocket_launch")._research("automation")
+    assert repeated.id == first.id
+    assert failures[repeated.id] == 2
+
+    # Native progress or a newly supplied lab admits a distinct passive wait;
+    # neither case clears nor weakens the old failure record.
+    state.factory["research_progress"] = 0.27
+    progressed = FactoryPlanner(data, state, "rocket_launch")._research("automation")
+    assert progressed.id != first.id
+    assert failures.get(progressed.id, 0) == 0
+    state.factory["research_progress"] = 0.12345678901231
+    precise_first = FactoryPlanner(data, state, "rocket_launch")._research("automation")
+    state.factory["research_progress"] = 0.12345678901239
+    precise_second = FactoryPlanner(data, state, "rocket_launch")._research("automation")
+    assert precise_second.id != precise_first.id
+    state.factory["research_progress"] = 0
+    state.factory["entities"]["utility:lab"]["input"]["logistic-science-pack"] = 20
+    resupplied = FactoryPlanner(data, state, "rocket_launch")._research("automation")
+    assert resupplied.id != first.id
+    assert failures.get(resupplied.id, 0) == 0
+
+
 def test_rocket_ready_dispatch_still_requires_native_launch_evidence():
     data = catalog()
     data.recipes["rocket-part"] = recipe("rocket-part", {}, "rocket-building")

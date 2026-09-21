@@ -47,10 +47,11 @@ class FactoryPlanner:
         return Plan(f"factory:{action}:{key}", self.goal,
                     description or f"{action}: {key}", (step,), materials=self.materials)
 
-    def _wait(self, effect, item="", threshold=0, role="", timeout=36000):
+    def _wait(self, effect, item="", threshold=0, role="", timeout=36000, identity=None):
         return self._plan("factory_wait", effect, item, threshold,
                           verification={"role": role} if role else {}, timeout=timeout,
-                          description=f"Observe native {effect} progress for {role or item}")
+                          description=f"Observe native {effect} progress for {role or item}",
+                          identity=identity)
 
     def _transfer(self, role, item, quantity, extracting=False):
         quantity = min(200, math.ceil(quantity))
@@ -371,8 +372,20 @@ class FactoryPlanner:
                 return prerequisite or self._transfer("utility:lab", item, max(1, needed))
         progress = self.factory.get("research_progress", 0)
         increment = min(0.01, 1 / max(1, tech["count"]))
+        # A wait which timed out while the lab lacked a pack must not veto a
+        # later wait after observed research progress or lab supplies changed.
+        # Retain the old failure record, but bind this passive observation to
+        # the exact progress/supply epoch rather than just the technology.
+        supplies = ",".join(
+            f"{ingredient['name']}={lab.get('input', {}).get(ingredient['name'], 0)}"
+            for ingredient in sorted(tech["ingredients"], key=lambda value: value["name"])
+        )
+        # repr(float) is the shortest round-trippable spelling, so distinct
+        # native progress values cannot collapse into the same failure budget.
+        identity = f"{name}:progress:{progress!r}:supplies:{supplies}"
         return self._wait("research_progress", name, min(1, progress + increment),
-                          timeout=max(3600, min(216000, tech["energy_ticks"] * 4)))
+                          timeout=max(3600, min(216000, tech["energy_ticks"] * 4)),
+                          identity=identity)
 
     def plan(self) -> Plan | None:
         if not self.factory:
