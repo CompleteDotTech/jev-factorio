@@ -5,6 +5,8 @@ import json
 import math
 from dataclasses import dataclass, field
 
+import requests
+
 from .skills import Plan
 
 
@@ -178,7 +180,17 @@ def select_plan(client, state: dict, plans: list[Plan], confidence_floor: float 
                 max_bytes: int = 32000) -> Decision:
     _number(confidence_floor)
     context, questions, offered = question_batch(state, plans, max_bytes=max_bytes)
-    answers = client.evaluate(context, questions)
+    try:
+        answers = client.evaluate(context, questions)
+    except (requests.Timeout, requests.ConnectionError) as error:
+        return Decision(None, "observe", f"Transient provider failure: {type(error).__name__}",
+                        context, questions, model_called=True)
+    except requests.HTTPError as error:
+        status = error.response.status_code if error.response is not None else None
+        if status is None or not (500 <= status <= 599 or status in {408, 429}):
+            raise
+        return Decision(None, "observe", f"Transient provider failure: HTTP {status}",
+                        context, questions, model_called=True)
     try:
         validate_answers(questions, answers, quantum=getattr(client, "answer_quantum", 0))
     except InvalidJudgment as error:

@@ -1,0 +1,320 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from jev_factorio.supervisor import Supervisor, SupervisorConfig, atomic_json
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+class FakeProcess:
+    pid = 99999999
+
+    def __init__(self, code=None):
+        self.returncode = code
+        self.reaped = False
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self):
+        self.reaped = True
+        self.returncode = -9
+        return self.returncode
+
+
+@pytest.fixture
+def supervisor(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "checkpoint.json"
+    atomic_json(checkpoint, {"session_id": "fresh", "target": "rocket_launch",
+                             "status": "running", "pending": None})
+    clock = FakeClock()
+    config = SupervisorConfig(
+        state_dir=tmp_path / "watchdog", checkpoint=checkpoint,
+        session_id="fresh", started_at=1000, repair_command=["repair"],
+        cwd=tmp_path, duration_hours=0.01, poll_seconds=1, hang_seconds=3,
+        backoff_seconds=1,
+    )
+    config.state_dir.mkdir()
+    instance = Supervisor(config, clock=clock, sleep=clock.sleep,
+                          popen=lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(instance, "kill_group", lambda pid: None)
+    monkeypatch.setattr(instance, "lock_path", lambda: tmp_path / ".supervisor.lock")
+    monkeypatch.setattr(instance, "source_identity", lambda: ("head", "diff"))
+    instance.initialize()
+    return instance
+
+
+def test_cutoff_survives_restart_and_cannot_extend(supervisor):
+    original = supervisor.state["cutoff"]
+    supervisor.clock.sleep(10)
+    supervisor.initialize()
+    assert supervisor.state["cutoff"] == original
+    supervisor.config.started_at += 1
+    with pytest.raises(ValueError, match="cannot be changed"):
+        supervisor.initialize()
+
+
+def test_resume_command_preserves_world_and_controller(supervisor):
+    command = supervisor.gameplay_command()
+    assert "--resume" in command and "--resume-controller" in command
+    assert command[command.index("--policy") + 1] == "hybrid"
+    assert command[command.index("--target") + 1] == "rocket_launch"
+
+
+@pytest.mark.parametrize("status", ["blocked", "uncertain", "completed"])
+def test_terminal_checkpoint_does_not_launch(supervisor, status):
+    checkpoint = supervisor.checkpoint()
+    checkpoint["status"] = status
+    atomic_json(supervisor.config.checkpoint, checkpoint)
+    supervisor.popen = lambda *args, **kwargs: pytest.fail("should not launch")
+    assert supervisor.watch_game() == status
+
+
+def test_hang_detected_and_process_reaped(supervisor):
+    assert supervisor.watch_game() == "checkpoint_heartbeat_timeout"
+    process = supervisor.process
+    supervisor.stop_process()
+    assert process.reaped
+    assert supervisor.state["process"] is None
+
+
+def test_successful_exit_still_requires_completed_checkpoint(supervisor):
+    supervisor.popen = lambda *args, **kwargs: FakeProcess(0)
+    assert supervisor.watch_game() == "process_exit: 0"
+    supervisor.stop_process()
+
+
+def test_cutoff_stops_hung_process(supervisor):
+    supervisor.config.hang_seconds = 1000
+    assert supervisor.watch_game() == "cutoff"
+    process = supervisor.process
+    supervisor.stop_process()
+    assert process.reaped
+    assert supervisor.clock() == supervisor.state["cutoff"]
+
+
+def operational_result(supervisor, tmp_path):
+    result = tmp_path / "result.json"
+    atomic_json(result, {
+        "status": "repaired", "kind": "operational", "session_id": "fresh",
+        "checkpoint": str(supervisor.config.checkpoint.resolve()),
+        "operational_verified": True, "evidence": ["observed receipts retained"],
+    })
+    return result
+
+
+def test_operational_result_requires_unchanged_source(supervisor, tmp_path, monkeypatch):
+    result = operational_result(supervisor, tmp_path)
+    monkeypatch.setattr(supervisor, "source_identity", lambda: ("head", "diff"))
+    assert supervisor.validate_repair(result, supervisor.checkpoint(), ("head", "diff"))
+    assert not supervisor.validate_repair(result, supervisor.checkpoint(), ("other", "diff"))
+
+
+def test_pending_cannot_be_cleared_by_repair_ack(supervisor, tmp_path, monkeypatch):
+    result = operational_result(supervisor, tmp_path)
+    monkeypatch.setattr(supervisor, "source_identity", lambda: ("head", "diff"))
+    previous = {**supervisor.checkpoint(), "pending": {"dispatch": "ambiguous"}}
+    assert not supervisor.validate_repair(result, previous, ("head", "diff"))
+
+
+def test_repair_ack_alone_is_rejected(supervisor, tmp_path):
+    result = tmp_path / "result.json"
+    atomic_json(result, {"status": "repaired"})
+    assert not supervisor.validate_repair(result, supervisor.checkpoint())
+
+
+def test_wrong_session_rejected(supervisor):
+    checkpoint = supervisor.checkpoint()
+    checkpoint["session_id"] = "replacement"
+    atomic_json(supervisor.config.checkpoint, checkpoint)
+    with pytest.raises(ValueError, match="session"):
+        supervisor.checkpoint()
+
+
+def test_failed_repairs_back_off_until_original_cutoff(supervisor, monkeypatch):
+    calls = []
+    monkeypatch.setattr(supervisor, "watch_game", lambda: "blocked")
+    monkeypatch.setattr(supervisor, "repair", lambda reason: calls.append(supervisor.clock()) or False)
+    assert supervisor.run() == 0
+    assert 1 < len(calls) < 10
+    assert calls[1] - calls[0] == 2
+    assert supervisor.state["phase"] == "cutoff"
+    assert supervisor.clock() == supervisor.state["cutoff"]
+
+
+def test_game_stopped_before_repair(supervisor, monkeypatch):
+    process = FakeProcess()
+
+    def game():
+        supervisor.process = process
+        return "uncertain"
+
+    def repair(reason):
+        assert process.reaped
+        assert supervisor.process is None
+        supervisor.stop_requested = True
+        return False
+
+    monkeypatch.setattr(supervisor, "watch_game", game)
+    monkeypatch.setattr(supervisor, "repair", repair)
+    assert supervisor.run() == 0
+
+
+def test_config_rejects_string_command(supervisor):
+    supervisor.config.repair_command = "shell command"
+    with pytest.raises(ValueError):
+        supervisor.config.validate()
+
+
+def test_independent_review_requires_exact_head_and_other_agent(supervisor):
+    path = supervisor.config.state_dir / "review.json"
+    atomic_json(path, {"head": "a" * 40, "verdict": "approved",
+                      "reviewer": "review-agent", "source_evidence": ["inspected controller safety"]})
+    result = {"independent_review": str(path), "repair_agent": "repair-agent"}
+    assert supervisor.independent_review(result, "a" * 40)
+    assert not supervisor.independent_review(result, "b" * 40)
+    result["repair_agent"] = "review-agent"
+    assert not supervisor.independent_review(result, "a" * 40)
+
+
+def test_code_claim_requires_independent_git_and_check_validation(supervisor, tmp_path, monkeypatch):
+    result = tmp_path / "result.json"
+    atomic_json(result, {
+        "status": "repaired", "kind": "code", "session_id": "fresh",
+        "checkpoint": str(supervisor.config.checkpoint.resolve()),
+        "tests_passed": True, "checks_passed": True, "exact_head_reviewed": True,
+        "merged": True, "remotes_synced": True, "commit": "a" * 40,
+        "evidence": ["tests and review"], "pr_url": "https://github.com/owner/repo/pull/1",
+    })
+    monkeypatch.setattr(supervisor, "verify_code", lambda value: False)
+    assert not supervisor.validate_repair(result, supervisor.checkpoint())
+
+
+def test_run_lock_excludes_other_state_directory(supervisor):
+    import fcntl
+
+    with supervisor.lock_path().open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(RuntimeError, match="Another supervisor"):
+            supervisor.run()
+
+
+def test_corrupt_checkpoint_still_dispatches_repair(supervisor):
+    supervisor.config.checkpoint.write_text("{invalid")
+    launched = []
+
+    def launch(command, phase, prompt=None):
+        launched.append(phase)
+        supervisor.process = FakeProcess(0)
+
+    supervisor.launch = launch
+    assert not supervisor.repair("checkpoint_invalid")
+    assert launched == ["repair"]
+    assert supervisor.state["repair_required"] is True
+    assert supervisor.state["incident"]["checkpoint"]["session_id"] == "fresh"
+
+
+def test_rejected_repair_cannot_replace_baseline_on_retry_or_restart(supervisor, monkeypatch):
+    initial = supervisor.checkpoint()
+    initial.update(pending={"dispatch": "ambiguous"}, active_plan={"id": "original"},
+                   step_index=1, reservations={"original": {"iron": 1}})
+    atomic_json(supervisor.config.checkpoint, initial)
+    supervisor.save(last_valid_checkpoint=initial)
+    supervisor.begin_repair("uncertain")
+    changed = {**initial, "pending": None, "active_plan": None, "step_index": 0}
+    atomic_json(supervisor.config.checkpoint, changed)
+    monkeypatch.setattr(supervisor, "source_identity", lambda: ("evil-head", "changed"))
+    supervisor.begin_repair("retry")
+    supervisor.initialize()
+    assert supervisor.state["repair_required"] is True
+    assert supervisor.state["incident"]["checkpoint"] == initial
+    assert tuple(supervisor.state["incident"]["source"]) == ("head", "diff")
+
+
+@pytest.mark.parametrize("key,value", [
+    ("active_plan", {"id": "changed"}), ("step_index", 99), ("reservations", {}),
+])
+def test_pending_semantics_cannot_be_changed(supervisor, tmp_path, key, value):
+    previous = supervisor.checkpoint()
+    previous.update(pending={"dispatch": "ambiguous"}, active_plan={"id": "original"},
+                    step_index=1, reservations={"original": {"iron": 1}})
+    changed = {**previous, key: value}
+    atomic_json(supervisor.config.checkpoint, changed)
+    result = operational_result(supervisor, tmp_path)
+    assert not supervisor.validate_repair(result, previous, ("head", "diff"))
+
+
+def test_resume_with_repair_gate_never_starts_game(supervisor, monkeypatch):
+    supervisor.begin_repair("blocked")
+    monkeypatch.setattr(supervisor, "watch_game", lambda: pytest.fail("repair gate bypassed"))
+
+    def repair(reason):
+        assert reason == "blocked"
+        supervisor.stop_requested = True
+        return False
+
+    monkeypatch.setattr(supervisor, "repair", repair)
+    assert supervisor.run() == 0
+
+
+def test_code_verification_rejects_dirty_worktree(supervisor, monkeypatch):
+    calls = iter([(0, "a" * 40), (0, " M src/changed.py")])
+    monkeypatch.setattr(supervisor, "capture", lambda command: next(calls))
+    assert not supervisor.verify_code({"commit": "a" * 40})
+
+
+@pytest.mark.parametrize("status,head", [(" M source.py", "a" * 40), ("", "b" * 40)])
+def test_code_verification_rechecks_source_after_tests(supervisor, monkeypatch, status, head):
+    commit = "a" * 40
+    pull = {"state": "MERGED", "mergeCommit": {"oid": commit}, "headRefOid": "c" * 40,
+            "reviews": [{"author": {"login": "reviewer"}, "state": "APPROVED",
+                         "commit": {"oid": "c" * 40}}],
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}]}
+    calls = iter([
+        (0, commit), (0, ""), (0, commit + "\trefs/heads/main"),
+        (0, commit + "\trefs/heads/main"), (0, json.dumps(pull)),
+        (0, "passed"), (0, status), (0, head),
+    ])
+    monkeypatch.setattr(supervisor, "capture", lambda command: next(calls))
+    assert not supervisor.verify_code({"commit": commit, "pr_url": "https://github.com/o/r/pull/1"})
+
+
+def test_crash_after_pending_write_uses_latest_checkpoint(supervisor):
+    pending = {**supervisor.checkpoint(), "pending": {"dispatch": "ambiguous"},
+               "active_plan": {"id": "latest"}, "step_index": 2,
+               "reservations": {"latest": {"iron": 1}}}
+
+    def start(*args, **kwargs):
+        atomic_json(supervisor.config.checkpoint, pending)
+        return FakeProcess(1)
+
+    supervisor.popen = start
+    assert supervisor.watch_game() == "process_exit: 1"
+    supervisor.stop_process()
+    supervisor.begin_repair("process_exit")
+    assert supervisor.state["incident"]["checkpoint"] == pending
+
+
+def test_final_checkpoint_after_stop_wins_over_last_poll(supervisor):
+    latest = {**supervisor.checkpoint(), "pending": {"dispatch": "prepared"}}
+    atomic_json(supervisor.config.checkpoint, latest)
+    supervisor.begin_repair("heartbeat_timeout")
+    assert supervisor.state["incident"]["checkpoint"] == latest
+
+
+@pytest.mark.parametrize("invalid", [[], None, 1, "wrong"])
+def test_non_object_checkpoint_is_repairable(supervisor, invalid):
+    supervisor.config.checkpoint.write_text(json.dumps(invalid))
+    supervisor.initialize()
+    assert supervisor.state["repair_required"]

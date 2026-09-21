@@ -26,6 +26,8 @@ class JevClient:
 
     def evaluate(self, state: dict, questions: dict) -> dict:
         """One system-one call. Returns the `answers` map keyed by question id."""
+        self.last_usage = None
+        self.last_model = None
         resp = requests.post(
             self.base_url,
             headers={"Authorization": f"Bearer {self.api_key}"},
@@ -102,6 +104,8 @@ class CloudflareJevClient:
                     f"{account_id}/ai/run")
 
     def evaluate(self, state: dict, questions: dict) -> dict:
+        self.last_usage = None
+        self.last_model = None
         resp = requests.post(
             self.url,
             headers={"Authorization": f"Bearer {self.api_token}"},
