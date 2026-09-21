@@ -94,6 +94,23 @@ def test_smelting_never_inserts_ore_without_fuel():
     assert step.costs == {"coal": 50}
 
 
+def test_raw_gather_commits_one_observed_fair_target_with_a_unique_postcondition():
+    state = snapshot(inventory={"wood": 12},
+                     nearby_resources={"wood": 0.65, "coal": 1, "stone": 1, "iron-ore": 1})
+
+    first = FactoryPlanner(catalog(), state, "rocket_launch")._need("wood", 20)
+
+    assert first.id == "factory:factory_gather:wood:target:13"
+    assert first.steps[0].parameters == {"resource": "wood", "quantity": 1}
+    assert first.steps[0].threshold == 13
+
+    state.inventory["wood"] = 13
+    later = FactoryPlanner(catalog(), state, "rocket_launch")._need("wood", 20)
+
+    assert later.id == "factory:factory_gather:wood:target:14"
+    assert later.steps[0].parameters == {"resource": "wood", "quantity": 1}
+
+
 def test_refueling_respects_the_remaining_native_fuel_stack_capacity():
     state = snapshot(inventory={"coal": 50})
     state.factory["entities"]["recipe:iron-plate"] = machine(fuel={"coal": 4})
