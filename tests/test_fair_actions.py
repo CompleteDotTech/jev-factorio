@@ -477,8 +477,36 @@ def test_callback_reload_preserves_previous_handlers_without_recursion(fair_runt
     fair_runtime.execute("""
         handlers[1]{}
         handlers[2]{id = 500}
-        assert(ticks_forwarded == 1)
+        assert(ticks_forwarded == 0)
+        assert(storage.fair.previous_tick ~= nil)
         assert(paths_forwarded == 1)
+    """)
+
+
+@pytest.mark.parametrize("terminal", ["idle", "completed", "failed", "expired"])
+def test_inherited_tick_cannot_restart_cancelled_controls(fair_runtime, terminal):
+    source = files("jev_factorio").joinpath("lua/fair_actions.lua").read_text()
+    fair_runtime.execute("""
+        handlers[1] = function()
+            player.walking_state = {walking = true}
+            player.mining_state = {mining = true}
+        end
+    """)
+    fair_runtime.execute(source)
+    fair_runtime.execute("storage.fair.bind()")
+    if terminal != "idle":
+        fair_runtime.execute('storage.fair.begin_mine({x = 2, y = 0}, "coal", 2)')
+        if terminal == "expired":
+            fair_runtime.execute("game.tick = 181; handlers[1]{}")
+        elif terminal == "failed":
+            fair_runtime.execute('storage.fair.stop("cancelled")')
+        else:
+            fair_runtime.execute("storage.fair.stop()")
+    fair_runtime.execute("""
+        handlers[1]{}
+        assert(not player.walking_state.walking)
+        assert(not player.mining_state.mining)
+        assert(quantities.coal == 0)
     """)
 
 

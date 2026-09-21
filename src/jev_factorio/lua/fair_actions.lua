@@ -260,15 +260,6 @@ if previous_tick ~= fair.tick_handler then fair.previous_tick = previous_tick en
 fair.tick_handler = function(event)
     if fair.quarantined then fair.stop("Adapter attachment is not validated"); return end
     local job = fair.job
-    -- An inherited FLE tick callback can be useful while the controller is
-    -- idle, but it cannot share a player-control tick with a fair walk or
-    -- mine.  It may retain a stale scripted queue, throw, or overwrite the
-    -- player's walking/mining state.  Keep it installed for idle runtime
-    -- behavior, but quarantine it for the bounded native control lease.
-    if not job and fair.previous_tick then
-        local succeeded = pcall(fair.previous_tick, event)
-        if not succeeded then fair.stop("Legacy tick handler failed"); return end
-    end
     if not job or job.status == "failed" or job.status == "completed" then return end
     local ok, player = pcall(fair.actor)
     if not ok then fair.stop("Fair player/session invariant failed"); return end

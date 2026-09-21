@@ -10,10 +10,11 @@ shortcuts.
 - Mining selects the native resource and holds `mining_state`; inventory gains
   must come from the engine. Depleted targets can be approached and replaced.
   Reachable resources are mined in place; otherwise the walking approach is on
-  the actor-facing side rather than beyond the resource. Wood failure budgets
-  use the observed surface, tree prototype and exact position because native
-  trees need not have a `unit_number`. A replacement at the same site retains
-  that site's failure budget.
+  the actor-facing side rather than beyond the resource. Raw-resource gather
+  budgets use the observed surface, prototype, exact position and inventory
+  target because native resources need not have a `unit_number`. The same site
+  and inventory target retain their budget; historical failed plans are not
+  erased when another observed site or inventory target is admitted.
   Tree targeting probes native cursor selection and skips trunks obscured by
   another entity's selection box. This changes selection only, not movement,
   mining, entity state or inventory.
@@ -30,11 +31,12 @@ shortcuts.
 - The adapter rejects disconnected/replaced characters, cheat mode, and game
   speed other than 1. A short renewed control lease stops input if the controller
   disappears. Path, progress, and observation timeouts fail closed.
-- Legacy FLE walking/mining callbacks are quarantined before attachment. An
-  inherited `on_tick` callback can continue while the controller is idle, but
-  is not invoked during a bounded fair walking or mining lease, so stale
-  scripted work cannot throw or overwrite native player controls. Retained
-  scripted work is preserved but rejected until explicitly reconciled.
+- Legacy FLE walking/mining callbacks are quarantined before attachment.
+  Inherited `on_tick` callbacks are retained for inspection but never invoked
+  while this adapter owns controls, including idle and terminal job states.
+  This prevents stale callbacks from restarting input after cancellation or
+  lease expiry. Retained scripted work is preserved but rejected until
+  explicitly reconciled.
 
 These APIs emulate player controls rather than keyboard/mouse events. Factorio's
 [LuaControl documentation](https://lua-api.factorio.com/latest/classes/LuaControl.html#mining_state)

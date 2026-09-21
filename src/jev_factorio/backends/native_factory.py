@@ -66,48 +66,35 @@ class NativeFactory:
         snapshot.victory = factory["rockets_launched"] > factory["rocket_baseline"]
         snapshot.victory_source = "native:base-game-rocket-launch" if snapshot.victory else None
         snapshot.tick = factory["tick"]
-        # FLE's Wood resource lookup can retain a decorative or already
-        # depleted tree.  Do not commit a fair gather from that stale adapter
-        # coordinate: use the adapter's read-only native selector, which
-        # admits only a valid and minable tree around the bound player.  It
-        # neither walks nor starts mining; FairActions.harvest still approaches
-        # and verifies normal reach before native player mining.
-        native_wood = self.backend._fair.call("next_mine_target", "wood", 64)
-        candidate = native_wood.get("position") if isinstance(native_wood, dict) else None
-        name = native_wood.get("name") if isinstance(native_wood, dict) else None
-        surface_index = native_wood.get("surface_index") if isinstance(native_wood, dict) else None
-        if isinstance(candidate, dict):
+        factory.pop("fair_resource_targets", None)
+        for resource in ("wood", "coal", "iron-ore", "copper-ore", "stone"):
+            self.backend._resources.pop(resource, None)
+            snapshot.nearby_resources.pop(resource, None)
+            radius = 64 if resource == "wood" else 128
+            observed = self.backend._fair.call("next_mine_target", resource, radius)
+            candidate = observed.get("position") if isinstance(observed, dict) else None
+            name = observed.get("name") if isinstance(observed, dict) else None
+            surface_index = observed.get("surface_index") if isinstance(observed, dict) else None
+            if not isinstance(candidate, dict):
+                continue
             horizontal, vertical = candidate.get("x"), candidate.get("y")
             if (isinstance(horizontal, (int, float)) and not isinstance(horizontal, bool)
                     and isinstance(vertical, (int, float)) and not isinstance(vertical, bool)
                     and math.isfinite(horizontal) and math.isfinite(vertical)
                     and isinstance(name, str) and name.strip()
+                    and (resource == "wood" or name == resource)
                     and type(surface_index) is int and surface_index > 0):
                 location = Position(x=float(horizontal), y=float(vertical))
-                self.backend._resources["wood"] = location
-                snapshot.nearby_resources["wood"] = math.hypot(
+                self.backend._resources[resource] = location
+                snapshot.nearby_resources[resource] = math.hypot(
                     location.x - snapshot.player_position[0],
                     location.y - snapshot.player_position[1],
                 )
-                factory["fair_resource_targets"] = {
-                    "wood": {
-                        "name": name,
-                        "surface_index": surface_index,
-                        "position": {"x": location.x, "y": location.y},
-                    }
+                factory.setdefault("fair_resource_targets", {})[resource] = {
+                    "name": name,
+                    "surface_index": surface_index,
+                    "position": {"x": location.x, "y": location.y},
                 }
-        # Mineable raw resources use the same fair native admission as coal
-        # and iron.  Never revive a depleted FLE nearest-resource coordinate
-        # by falling back to its cache.
-        for name in ("copper-ore", "stone"):
-            try:
-                location = self.backend.native_mine_target(name)
-                self.backend._resources[name] = location
-                snapshot.nearby_resources[name] = math.hypot(
-                    location.x - snapshot.player_position[0], location.y - snapshot.player_position[1]
-                )
-            except Exception:
-                pass
         for name, resource in (("water", Resource.Water), ("crude-oil", Resource.CrudeOil)):
             try:
                 location = self.backend._tools.nearest(resource)

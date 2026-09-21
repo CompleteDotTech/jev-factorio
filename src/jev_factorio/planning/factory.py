@@ -73,15 +73,16 @@ class FactoryPlanner:
             return recipe, self._research(unlocks[0], path)
         return recipe, None
 
-    def _fair_wood_identity(self, target: int) -> str | None:
-        """Bind failures to a native tree site, including any replacement there."""
+    def _fair_resource_identity(self, item: str, target: int) -> str | None:
+        """Bind failures to a native resource site, including any replacement there."""
         targets = self.factory.get("fair_resource_targets")
-        evidence = targets.get("wood") if isinstance(targets, dict) else None
+        evidence = targets.get(item) if isinstance(targets, dict) else None
         if not isinstance(evidence, dict):
             return None
         name, surface_index = evidence.get("name"), evidence.get("surface_index")
         position = evidence.get("position")
         if (not isinstance(name, str) or not name.strip()
+                or (item != "wood" and name != item)
                 or type(surface_index) is not int or surface_index <= 0
                 or not isinstance(position, dict)):
             return None
@@ -97,7 +98,7 @@ class FactoryPlanner:
             },
         }
         identity = json.dumps(site, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        return f"wood:target:{target}:site:{identity}"
+        return f"{item}:target:{target}:site:{identity}"
 
     def _need(self, item, amount, path=()):
         have = self.snapshot.inventory.get(item, 0)
@@ -119,11 +120,9 @@ class FactoryPlanner:
             # chooses any later tree normally.
             quantity = 1 if item == "wood" else min(50, missing)
             target = have + quantity
-            identity = None
-            if item == "wood":
-                identity = self._fair_wood_identity(target)
-                if identity is None:
-                    return self._explore(item)
+            identity = self._fair_resource_identity(item, target)
+            if identity is None:
+                return self._explore(item)
             return self._plan(
                 "factory_gather", "inventory", item, target,
                 parameters={"resource": item, "quantity": quantity}, timeout=18000,
