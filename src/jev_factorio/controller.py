@@ -149,9 +149,9 @@ class HierarchicalLoop(AgentLoop):
             "usage": getattr(self.jev, "last_usage", None) if decision else None,
             "pending": self.memory.pending, "history": self.memory.history[-8:],
         }
-        if self.factory_scheduling != "serial":
+        if getattr(self, "factory_scheduling", "serial") != "serial":
             record["factory_scheduling"] = self.factory_scheduling
-        fair = getattr(self.backend, "_fair", None)
+        fair = getattr(getattr(self, "backend", None), "_fair", None)
         metrics = getattr(fair, "metrics", None)
         if isinstance(metrics, dict):
             record["fair_action_metrics"] = dict(metrics)

@@ -119,7 +119,11 @@ class ReadyWorkPlanner(FactoryPlanner):
         if item in self.raw_targets and self.snapshot.inventory.get(item, 0) < amount:
             amount = max(amount, self.raw_targets[item])
         plan = super()._need(item, amount, path)
-        return self._batch_collection(plan, amount) if plan else None
+        # Only the item whose need produced this extraction may set its batch
+        # target. An ancestor recipe can require many outputs but few plates.
+        if plan and (plan.steps[0].parameters or {}).get("item") == item:
+            return self._batch_collection(plan, amount)
+        return plan
 
     def candidates(self) -> list[Plan]:
         primary = self.plan()

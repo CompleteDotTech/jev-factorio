@@ -12,7 +12,7 @@ from jev_factorio.memory import CampaignMemory
 from jev_factorio.planning.ready_work import ReadyWorkPlanner, compile_ready_factory
 from jev_factorio.skills import Plan, Step
 from test_factory import catalog, machine, recipe, snapshot
-from test_fair_actions import fair_runtime  # Reuse the existing Lua-control fixture.
+from importlib.resources import files
 
 
 def production_state(output=1, buffered=8, crafting=True, fuel=10):
@@ -239,6 +239,36 @@ def test_ready_fallback_preserves_compiler_priority_not_alphabetical_id():
 
 
 @pytest.fixture
+def fair_runtime():
+    # Use Lupa's installed runtime, not an optional version-specific submodule.
+    # Load the real control adapter so actor/speed/reach guards are not reimplemented.
+    from lupa import LuaRuntime
+
+    runtime = LuaRuntime()
+    runtime.execute("""
+        handlers = {}
+        defines = {events = {on_tick = 1, on_script_path_request_finished = 2}}
+        script = {
+            get_event_handler = function(event) return handlers[event] end,
+            on_event = function(event, callback) handlers[event] = callback end,
+            on_nth_tick = function() end
+        }
+        character = {valid = true, unit_number = 9}
+        reachable = true
+        player = {connected = true, character = character, cheat_mode = false,
+            position = {x = 0, y = 0}, surface = {},
+            can_reach_entity = function() return reachable end}
+        player.surface.find_entity = function() return built_entity end
+        surface = player.surface
+        prototypes = {entity = {}}
+        game = {tick = 0, speed = 1, get_player = function() return player end}
+        storage = {agent_characters = {character}}
+    """)
+    runtime.execute(files("jev_factorio").joinpath("lua/fair_actions.lua").read_text())
+    return runtime
+
+
+@pytest.fixture
 def position_module(monkeypatch):
     parent, env = ModuleType("fle"), ModuleType("fle.env")
     env.Position = SimpleNamespace
@@ -318,3 +348,22 @@ def test_cli_rejects_ready_work_for_flat_controller_before_backend_start(monkeyp
     with pytest.raises(SystemExit) as error:
         main.cli()
     assert error.value.code == 2
+
+
+def test_ancestor_recipe_does_not_inflate_a_small_plate_requirement():
+    data, state = production_state()
+    data.recipes["bulk-part"] = recipe("bulk-part", {"iron-plate": 1})
+    data.recipes["bulk-part"]["products"][0]["amount"] = 20
+    step = ReadyWorkPlanner(data, state, "rocket_launch")._need("bulk-part", 20).steps[0]
+    assert step.action == "factory_extract"
+    assert step.parameters["item"] == "iron-plate" and step.parameters["quantity"] == 1
+
+
+def test_no_entity_uses_construction_approach_without_treating_it_as_reachable(position_module):
+    fair = FairActions.__new__(FairActions)
+    fair.command = lambda script: json.dumps({"x": 2, "y": 3})
+    moves = []
+    fair.move_to = moves.append
+    fair.approach(SimpleNamespace(x=0, y=0), "stone-furnace")
+    assert len(moves) == 1
+    assert fair.metrics.get("approaches_skipped_in_reach", 0) == 0
