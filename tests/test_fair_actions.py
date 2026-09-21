@@ -482,6 +482,41 @@ def test_callback_reload_preserves_previous_handlers_without_recursion(fair_runt
     """)
 
 
+def test_unsafe_inherited_tick_is_quarantined_during_native_mining(fair_runtime):
+    source = files("jev_factorio").joinpath("lua/fair_actions.lua").read_text()
+    fair_runtime.execute("""
+        handlers[1] = function() error("stale FLE tick must not control mining") end
+    """)
+    fair_runtime.execute(source)
+    fair_runtime.execute("""
+        storage.fair.bind()
+        storage.fair.begin_mine({x = 2, y = 0}, "coal", 2)
+        handlers[1]{}
+        assert(storage.fair.job.status == "mining")
+        assert(player.mining_state.mining)
+        assert(quantities.coal == 0)
+    """)
+
+
+def test_unsafe_inherited_tick_is_quarantined_during_native_walking(fair_runtime):
+    source = files("jev_factorio").joinpath("lua/fair_actions.lua").read_text()
+    fair_runtime.execute("""
+        handlers[1] = function() error("stale FLE tick must not control walking") end
+    """)
+    fair_runtime.execute(source)
+    fair_runtime.execute("""
+        storage.fair.bind()
+        storage.fair.begin_move{x = 2, y = 0}
+        handlers[2]{id = 17, path = {
+            {position = {x = 0, y = 0}}, {position = {x = 2, y = 0}}
+        }}
+        handlers[1]{}
+        assert(storage.fair.job.status == "walking")
+        assert(player.walking_state.walking)
+        assert(player.position.x == 0)
+    """)
+
+
 def test_failed_path_reports_failure_without_moving(fair_runtime):
     fair_runtime.execute("""
         storage.fair.begin_move{x = 2, y = 0}

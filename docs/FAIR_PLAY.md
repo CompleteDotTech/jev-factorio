@@ -30,7 +30,10 @@ shortcuts.
 - The adapter rejects disconnected/replaced characters, cheat mode, and game
   speed other than 1. A short renewed control lease stops input if the controller
   disappears. Path, progress, and observation timeouts fail closed.
-- Legacy FLE walking/mining callbacks are quarantined before attachment. Retained
+- Legacy FLE walking/mining callbacks are quarantined before attachment. An
+  inherited `on_tick` callback can continue while the controller is idle, but
+  is not invoked during a bounded fair walking or mining lease, so stale
+  scripted work cannot throw or overwrite native player controls. Retained
   scripted work is preserved but rejected until explicitly reconciled.
 
 These APIs emulate player controls rather than keyboard/mouse events. Factorio's
