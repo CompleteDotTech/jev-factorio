@@ -380,7 +380,9 @@ class FactoryPlanner:
             f"{ingredient['name']}={lab.get('input', {}).get(ingredient['name'], 0)}"
             for ingredient in sorted(tech["ingredients"], key=lambda value: value["name"])
         )
-        identity = f"{name}:progress:{progress:.12g}:supplies:{supplies}"
+        # repr(float) is the shortest round-trippable spelling, so distinct
+        # native progress values cannot collapse into the same failure budget.
+        identity = f"{name}:progress:{progress!r}:supplies:{supplies}"
         return self._wait("research_progress", name, min(1, progress + increment),
                           timeout=max(3600, min(216000, tech["energy_ticks"] * 4)),
                           identity=identity)

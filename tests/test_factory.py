@@ -788,6 +788,11 @@ def test_research_wait_failure_budget_is_scoped_to_observed_progress_and_supplie
     progressed = FactoryPlanner(data, state, "rocket_launch")._research("automation")
     assert progressed.id != first.id
     assert failures.get(progressed.id, 0) == 0
+    state.factory["research_progress"] = 0.12345678901231
+    precise_first = FactoryPlanner(data, state, "rocket_launch")._research("automation")
+    state.factory["research_progress"] = 0.12345678901239
+    precise_second = FactoryPlanner(data, state, "rocket_launch")._research("automation")
+    assert precise_second.id != precise_first.id
     state.factory["research_progress"] = 0
     state.factory["entities"]["utility:lab"]["input"]["logistic-science-pack"] = 20
     resupplied = FactoryPlanner(data, state, "rocket_launch")._research("automation")
