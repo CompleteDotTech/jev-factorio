@@ -763,6 +763,42 @@ def test_ambiguous_placement_stays_pending_without_absence_proof(
     assert backend.actions == actions_before
 
 
+def test_ambiguous_gather_with_observed_partial_yield_replans_without_dispatching():
+    plan = Plan(
+        id="factory:factory_gather:wood", goal="rocket_launch", description="gather wood",
+        steps=[Step(
+            action="factory_gather", effect="inventory", item="wood", threshold=20,
+            parameters={"resource": "wood", "quantity": 20}, timeout_ticks=18000,
+        )],
+    )
+    state = snapshot(inventory={"wood": 8})
+    controller = object.__new__(HierarchicalLoop)
+    controller.target = "rocket_launch"
+    controller.policy = "deterministic"
+    controller.jev = None
+    controller.log_file = None
+    controller.checkpoint = None
+    controller._decision = None
+    controller.memory = CampaignMemory(
+        session_id="test-factory", target="rocket_launch", active_goal="rocket_launch",
+        active_plan=plan.to_dict(), pending={
+            "started_tick": 10, "polls": 1,
+            "action": "factory_gather", "dispatch": "ambiguous",
+        },
+        reservations={plan.id: {}}, last_tick=10, status="uncertain",
+    )
+
+    record = controller._verify_pending(state)
+
+    assert record["action"] == "reconcile"
+    assert record["status"] == "running"
+    assert "Observed 8 wood below committed inventory threshold 20" in record["outcome"]
+    assert controller.memory.pending is None
+    assert controller.memory.active_plan is None
+    assert controller.memory.reservations == {}
+    assert controller.memory.failures == {plan.id: 1}
+
+
 @pytest.mark.parametrize("change", [
     "missing_counts", "spent_material", "changed_reservation", "missing_role",
     "missing_connectors", "incomplete_connectors", "same_fluid_connector",
