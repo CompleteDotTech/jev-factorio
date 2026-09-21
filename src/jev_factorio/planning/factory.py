@@ -36,9 +36,11 @@ class FactoryPlanner:
         return (*path, key)
 
     def _plan(self, action, effect, item="", threshold=0, *, parameters=None,
-              verification=None, costs=None, timeout=1800, description=""):
+              verification=None, costs=None, timeout=1800, description="", identity=None):
         parameters = parameters or {}
-        key = parameters.get("role", parameters.get("recipe", parameters.get("technology", item)))
+        key = identity or parameters.get(
+            "role", parameters.get("recipe", parameters.get("technology", item))
+        )
         step = Step(action, effect, item, threshold, costs, timeout,
                     parameters=parameters, verification=verification)
         return Plan(f"factory:{action}:{key}", self.goal,
@@ -83,11 +85,22 @@ class FactoryPlanner:
         if item in RAW_ITEMS:
             if item not in self.snapshot.nearby_resources:
                 return self._explore(item)
-            quantity = min(50, missing)
+            # A wood observation proves only one currently mineable tree, not
+            # a whole forest. A tree can yield several wood and then disappear,
+            # unlike the stackable resource patches used for ore, coal, and
+            # stone. Keep wood to one fair native mine; the next observation
+            # chooses any later tree normally.
+            quantity = 1 if item == "wood" else min(50, missing)
+            target = have + quantity
             return self._plan(
-                "factory_gather", "inventory", item, have + quantity,
+                "factory_gather", "inventory", item, target,
                 parameters={"resource": item, "quantity": quantity}, timeout=18000,
-                description=f"Gather {quantity} observed {item}; inventory target {have + quantity}",
+                description=f"Gather {quantity} observed {item}; inventory target {target}",
+                # Wood failure budgets belong to the exact committed
+                # postcondition. A historical unverified forest target must
+                # not suppress a later, smaller observed fair mine, and is
+                # retained in memory.
+                identity=f"{item}:target:{target}" if item == "wood" else None,
             )
         recipe, prerequisite = self._recipe(item, path)
         if prerequisite:
