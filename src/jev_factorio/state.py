@@ -34,6 +34,7 @@ class GameSnapshot:
     production_rates: dict[str, float] | None = None
     victory: bool | None = None
     victory_source: str | None = None
+    factory: dict = field(default_factory=dict)
 
     def for_jev(self) -> dict:
         """Compact structured state sent to Jev."""

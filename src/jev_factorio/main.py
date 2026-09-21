@@ -41,8 +41,9 @@ def cli() -> None:
                    default=float(os.environ.get("JEV_CONFIDENCE_FLOOR", "0.45")))
     p.add_argument("--log-file", default=os.environ.get("JEV_LOG_FILE"))
     p.add_argument("--controller", choices=("flat", "hierarchical"), default="flat")
-    p.add_argument("--target", choices=("bootstrap_mining", "rocket_launch"), default="rocket_launch")
-    p.add_argument("--policy", choices=("jev", "deterministic"), default="jev")
+    p.add_argument("--target", choices=("bootstrap_mining", "iron_smelting", "steam_power",
+                                       "automation_science", "rocket_launch"), default="rocket_launch")
+    p.add_argument("--policy", choices=("jev", "deterministic", "hybrid"), default="jev")
     p.add_argument("--mock-model", action="store_true", help="Explicit offline model (mock backend only)")
     p.add_argument("--model", help="Provider-specific model ID; pin it for reproducible evaluation")
     p.add_argument("--checkpoint", help="Session-bound controller checkpoint, not a game save")
@@ -79,8 +80,8 @@ def cli() -> None:
 
         if args.backend not in {"mock", "fle"}:
             p.error("Hierarchical control currently supports mock and FLE backends")
-        if args.mock_model and (args.backend != "mock" or args.policy != "jev"):
-            p.error("--mock-model requires --backend mock and --policy jev")
+        if args.mock_model and (args.backend != "mock" or args.policy == "deterministic"):
+            p.error("--mock-model requires --backend mock and a model-based policy")
         if args.backend != "mock" and (not args.checkpoint or args.tick_seconds <= 0):
             p.error("Live hierarchical control requires --checkpoint and a positive --tick-seconds")
         if args.checkpoint and Path(args.checkpoint).exists() and not args.resume_controller:

@@ -1,0 +1,186 @@
+"""Native production adapter: ordinary inventories, crafting, research and pipes."""
+from __future__ import annotations
+
+import json
+import math
+from importlib.resources import files
+from typing import Any
+
+from ..factory_contract import validate_command
+from ..planning.catalog import Catalog
+from ..state import GameSnapshot
+
+
+class NativeFactory:
+    def __init__(self, backend: Any) -> None:
+        self.backend = backend
+        raw = self.command(files("jev_factorio").joinpath("lua/catalog.lua").read_text())
+        self.catalog = Catalog.from_dict(json.loads(raw))
+        self.command(files("jev_factorio").joinpath("lua/factory.lua").read_text())
+        self.command("storage.campaign.discover()")
+
+    def command(self, script: str) -> str:
+        result = self.backend._instance.rcon_client.send_command("/sc " + script)
+        if result and result.startswith("Cannot execute command."):
+            raise RuntimeError(result)
+        return result or ""
+
+    def call(self, function: str, *arguments: Any) -> str:
+        encoded = ", ".join(
+            "helpers.json_to_table(" + json.dumps(json.dumps(value, allow_nan=False)) + ")"
+            if isinstance(value, (dict, list)) else json.dumps(value, allow_nan=False)
+            for value in arguments
+        )
+        return self.command(f"storage.campaign.{function}({encoded})")
+
+    def approach(self, position: Any) -> None:
+        from fle.env import Position
+
+        reachable = self.command(
+            "local position = storage.agent_characters[1].surface.find_non_colliding_position("
+            "'character', {x=" + str(position.x) + ",y=" + str(position.y) + "}, 8, 0.5); "
+            "assert(position, 'No reachable entity approach'); "
+            "rcon.print(helpers.table_to_json(position))"
+        )
+        self.backend._tools.move_to(Position(**json.loads(reachable)))
+
+    def observe(self, snapshot: GameSnapshot) -> GameSnapshot:
+        from fle.env import Resource
+
+        raw = self.command("rcon.print(helpers.table_to_json(storage.campaign.observe()))")
+        factory = json.loads(raw)
+        if self.backend._drill is not None:
+            drop = self.backend._drill.drop_position
+            for role, entity in factory["entities"].items():
+                position = entity["position"]
+                if entity["name"] == "wooden-chest" and math.hypot(
+                    position["x"] - drop.x, position["y"] - drop.y
+                ) <= 0.1:
+                    factory["drill_output_role"] = role
+                    break
+        snapshot.factory = factory
+        snapshot.game_version = self.catalog.version
+        snapshot.researched = factory["researched"] or []
+        snapshot.victory = factory["rockets_launched"] > factory["rocket_baseline"]
+        snapshot.victory_source = "native:base-game-rocket-launch" if snapshot.victory else None
+        snapshot.tick = factory["tick"]
+        for name, resource in (
+            ("copper-ore", Resource.CopperOre), ("stone", Resource.Stone),
+            ("wood", Resource.Wood), ("water", Resource.Water), ("crude-oil", Resource.CrudeOil),
+        ):
+            try:
+                location = self.backend._tools.nearest(resource)
+                self.backend._resources[name] = location
+                snapshot.nearby_resources[name] = math.hypot(
+                    location.x - snapshot.player_position[0], location.y - snapshot.player_position[1]
+                )
+            except Exception:
+                pass
+        return snapshot
+
+    @staticmethod
+    def prototype(name: str) -> Any:
+        from fle.env import Prototype
+
+        for prototype in Prototype:
+            if prototype.value[0] == name:
+                return prototype
+        raise ValueError(f"FLE has no supported prototype for {name}")
+
+    def entity(self, role: str) -> Any:
+        from fle.env import Position
+
+        state = json.loads(self.command(
+            "local entity = storage.campaign.entities[" + json.dumps(role) + "]; "
+            "assert(entity and entity.valid, 'Campaign entity disappeared'); "
+            "rcon.print(helpers.table_to_json({name=entity.name, position=entity.position}))"
+        ))
+        return self.backend._tools.get_entity(
+            self.prototype(state["name"]), Position(**state["position"])
+        )
+
+    def position(self, name: str, anchor: str) -> Any:
+        from fle.env import Position
+
+        if anchor in {"water", "crude-oil"}:
+            if anchor not in self.backend._resources:
+                raise ValueError(f"No observed {anchor} placement anchor")
+            return self.backend._resources[anchor]
+        raw = self.command(
+            "local campaign = storage.campaign; local count = 0; "
+            "for role in pairs(campaign.entities) do "
+            "if string.sub(role, 1, 6) ~= 'stock:' then count = count + 1 end end; "
+            "local reference = campaign.entities[" + json.dumps(anchor) + "]; "
+            "local center = reference and "
+            "{x=reference.position.x + 10, y=reference.position.y} or "
+            "{x=(count % 6)*12, y=32 + math.floor(count/6)*12}; "
+            "local position = storage.agent_characters[1].surface.find_non_colliding_position("
+            + json.dumps(name) + ", center, 48, 0.5); "
+            "assert(position, 'No collision-free factory site'); "
+            "rcon.print(helpers.table_to_json(position))"
+        )
+        return Position(**json.loads(raw))
+
+    def execute(self, action: str, parameters: dict) -> str:
+        validate_command(action, parameters)
+        tools = self.backend._tools
+        if action == "factory_wait":
+            return "Waiting for native production or research"
+        if action == "factory_bind":
+            self.call("bind_player")
+            return "Bound the existing agent character for native crafting"
+        if action == "factory_explore":
+            self.call("explore", parameters["radius"])
+            return f"Generated normal map terrain to radius {parameters['radius']} chunks"
+        if action == "factory_gather":
+            resource = parameters["resource"]
+            position = self.backend._resources[resource]
+            tools.move_to(position)
+            harvested = tools.harvest_resource(position, quantity=parameters["quantity"])
+            return f"Harvested {harvested} {resource}"
+        if action == "factory_craft":
+            self.call("craft", parameters["recipe"], parameters["batches"])
+            return f"Queued native crafting: {parameters['recipe']}"
+        if action == "factory_place":
+            from fle.env import Direction
+
+            position = self.position(parameters["name"], parameters["anchor"])
+            self.approach(position)
+            entity = tools.place_entity(self.prototype(parameters["name"]),
+                                        position=position, direction=Direction.UP, exact=False)
+            self.call("register", parameters["role"], parameters["name"],
+                      {"x": entity.position.x, "y": entity.position.y})
+            return f"Placed {parameters['name']} for {parameters['role']}"
+        if action == "factory_configure":
+            self.call("configure", parameters["role"], parameters["recipe"])
+            return f"Configured {parameters['role']}"
+        if action in {"factory_insert", "factory_extract"}:
+            self.approach(self.entity(parameters["role"]).position)
+            self.call("transfer", parameters["role"], parameters["item"],
+                      parameters["quantity"], parameters["receipt"], action == "factory_extract")
+            return f"Transferred {parameters['quantity']} {parameters['item']} ({parameters['receipt']})"
+        if action == "factory_connect":
+            from fle.env import Position
+
+            source, target = self.entity(parameters["source"]), self.entity(parameters["target"])
+            if parameters["kind"] == "pipe":
+                branch = json.loads(self.call("pipe_source", parameters["source"],
+                                              parameters["target"], parameters["fluid"]))
+                if branch:
+                    source = tools.get_entity(self.prototype("pipe"), Position(**branch))
+                elif hasattr(source, "output_connection_points"):
+                    points = [
+                        point for point in source.output_connection_points if point.type == parameters["fluid"]
+                    ]
+                    if not points:
+                        raise ValueError("Requested output fluid has no native connection point")
+                    source = Position(x=points[0].x, y=points[0].y)
+            tools.connect_entities(source, target, connection_type=self.prototype(parameters["kind"]))
+            return f"Constructed {parameters['kind']} connection; native topology must verify"
+        if action == "factory_research":
+            self.call("research", parameters["technology"])
+            return f"Started native research {parameters['technology']}"
+        if action == "factory_launch":
+            self.call("launch", parameters["role"])
+            return "Requested native rocket launch; awaiting force launch counter"
+        raise ValueError(f"Unsupported factory command: {action}")

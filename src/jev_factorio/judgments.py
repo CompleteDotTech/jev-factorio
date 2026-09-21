@@ -113,7 +113,10 @@ def question_batch(state: dict, plans: list[Plan], max_bytes: int = 32000,
                 "and checks them again before dispatch. walk_to_coal and walk_to_iron move "
                 "to an observed patch; mine_coal harvests five coal into inventory; "
                 "place_burner_drill consumes one drill and one chest on iron; fuel_drill "
-                "inserts five carried coal. Only the active_goal is being judged. "
+                "inserts five carried coal. factory_* steps execute the explicit parameters "
+                "using native recipes, paid inventory transfers, machines, physical connections, "
+                "and research. Native crafting waits for its real queue; native machines and "
+                "labs must actually produce or research. Only the active_goal is being judged. "
                 "Each action needs a fresh observed postcondition before it counts as success."
             ),
         }

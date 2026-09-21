@@ -6,6 +6,7 @@ import math
 import os
 from uuid import uuid4
 
+from ..planning.catalog import Catalog
 from ..state import GameSnapshot
 
 
@@ -40,6 +41,19 @@ class FleBackend:
         self._resources = {}
         self._drill = None
         self._error = ""
+        self._factory = None
+
+    def enable_factory(self) -> Catalog:
+        from .native_factory import NativeFactory
+
+        if self._factory is None:
+            self._factory = NativeFactory(self)
+        return self._factory.catalog
+
+    def execute(self, action: str, parameters: dict) -> str:
+        if self._factory is None:
+            raise RuntimeError("Native factory capabilities have not been enabled")
+        return self._factory.execute(action, parameters)
 
     @staticmethod
     def _adopt_session(client) -> str:
@@ -161,7 +175,7 @@ class FleBackend:
         ]
         collected = sum(tools.inspect_inventory(entity).get("iron-ore", 0)
                         for entity in output_chests)
-        return GameSnapshot(
+        snapshot = GameSnapshot(
             tick=live["tick"],
             session_id=live.get("session_id", ""),
             world_kind="fle",
@@ -175,6 +189,7 @@ class FleBackend:
             drill_output_connected=bool(output_chests),
             iron_ore_collected=collected,
         )
+        return self._factory.observe(snapshot) if self._factory else snapshot
 
     def act(self, action: str) -> str:
         from fle.env import Direction, Prototype

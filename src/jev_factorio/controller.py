@@ -37,9 +37,9 @@ class HierarchicalLoop(AgentLoop):
                  tick_seconds: float = 2.0, log_file: str | None = None,
                  max_request_bytes: int = 32000, max_pending_polls: int = 32,
                  max_stalled_decisions: int = 4):
-        if policy not in {"jev", "deterministic"}:
+        if policy not in {"jev", "deterministic", "hybrid"}:
             raise ValueError("Unknown campaign policy")
-        if policy == "jev" and jev is None:
+        if policy != "deterministic" and jev is None:
             raise ValueError("Supply an explicit Jev client; mock use must be intentional")
         if not math.isfinite(confidence_floor) or not 0 <= confidence_floor <= 1:
             raise ValueError("Confidence floor must be in [0, 1]")
@@ -63,6 +63,11 @@ class HierarchicalLoop(AgentLoop):
         self.max_stalled_decisions = max_stalled_decisions
         self.memory: CampaignMemory | None = None
         self._decision: Decision | None = None
+        self.catalog = None
+        if target in {"rocket_launch", "iron_smelting", "steam_power", "automation_science"} \
+                and hasattr(backend, "enable_factory"):
+            self.catalog = backend.enable_factory()
+            self.max_pending_polls = max(self.max_pending_polls, 1800)
 
     @property
     def terminal(self) -> bool:
@@ -72,7 +77,7 @@ class HierarchicalLoop(AgentLoop):
         snapshot = self.backend.observe()
         if not snapshot.session_id or snapshot.world_kind not in {"mock", "fle"}:
             raise ValueError("Hierarchical control requires identified backend/session telemetry")
-        if self.policy == "jev" and getattr(self.jev, "is_mock", False) and snapshot.world_kind != "mock":
+        if self.policy != "deterministic" and getattr(self.jev, "is_mock", False) and snapshot.world_kind != "mock":
             raise ValueError("A mock model cannot control or benchmark a live backend")
         if type(snapshot.tick) is not int or snapshot.tick < 0:
             raise ValueError("Invalid observation tick")
@@ -163,11 +168,16 @@ class HierarchicalLoop(AgentLoop):
                 self._clear_plan()
             self._refresh_goals(snapshot)
             return self._record(snapshot, "verify", "Observed expected postcondition", verified=True)
+        boiler = snapshot.factory.get("entities", {}).get("utility:boiler", {})
+        if step.action == "factory_wait" and boiler and boiler.get("fuel", {}).get("coal", 0) < 5:
+            self.memory.event("maintenance_required", reason="boiler fuel", tick=snapshot.tick)
+            self._clear_plan()
+            return self._record(snapshot, "observe", "Replan a nonmutating wait to replenish boiler fuel")
         pending["polls"] += 1
         expired = (snapshot.tick - pending["started_tick"] >= step.timeout_ticks
                    or pending["polls"] >= self.max_pending_polls)
         if expired:
-            if step.action == "idle":
+            if step.action in {"idle", "factory_wait"}:
                 self._fail_plan("Production made no verified progress within the observation budget")
                 return self._record(snapshot, "observe", self.memory.reason)
             # Execution may have partially mutated the game. Do not automatically
@@ -195,7 +205,14 @@ class HierarchicalLoop(AgentLoop):
         if self.terminal:
             return self._record(snapshot, "observe", self.memory.reason, verified=True)
         if self.memory.active_plan is None:
-            plans, blocker = compile_plans(self.memory.active_goal, snapshot)
+            if self.catalog is not None and self.memory.active_goal in {
+                "rocket_launch", "iron_smelting", "steam_power", "automation_science", "bootstrap_mining"
+            }:
+                from .planning.factory import compile_factory
+
+                plans, blocker = compile_factory(self.memory.active_goal, snapshot, self.catalog)
+            else:
+                plans, blocker = compile_plans(self.memory.active_goal, snapshot)
             plans = [p for p in plans if self.memory.failures.get(p.id, 0) < 2]
             if not plans:
                 self.memory.status, self.memory.reason = "blocked", blocker or "Plan failure budget exhausted"
@@ -204,7 +221,11 @@ class HierarchicalLoop(AgentLoop):
                 chosen = min(plans, key=lambda p: (len(p.steps), p.id))
                 self._decision = Decision(chosen.id, "deterministic")
             else:
-                state = {"facts": snapshot.for_jev(), "active_goal": asdict(GOALS[self.memory.active_goal]),
+                facts = snapshot.for_jev()
+                if facts["factory"]:
+                    receipts = facts["factory"].pop("receipts", {})
+                    facts["factory"]["native_transfer_receipt_count"] = len(receipts)
+                state = {"facts": facts, "active_goal": asdict(GOALS[self.memory.active_goal]),
                          "history": self.memory.history[-8:]}
                 try:
                     self._decision = select_plan(self.jev, state, plans, self.confidence_floor,
@@ -212,6 +233,10 @@ class HierarchicalLoop(AgentLoop):
                 except ValueError as error:
                     self._decision = Decision(None, "observe", str(error))
                 chosen = next((p for p in plans if p.id == self._decision.plan_id), None)
+                if chosen is None and self.policy == "hybrid":
+                    chosen = min(plans, key=lambda plan: (len(plan.steps), plan.id))
+                    self._decision.plan_id = chosen.id
+                    self._decision.source = "deterministic-fallback"
                 if chosen is None:
                     self.memory.stalled_decisions += 1
                     self.memory.reason = self._decision.reason
@@ -248,7 +273,8 @@ class HierarchicalLoop(AgentLoop):
         # treated as potentially dispatched, never blindly replayed.
         self._save()
         try:
-            outcome = self.backend.act(step.action)
+            outcome = (self.backend.execute(step.action, step.parameters or {})
+                       if step.action.startswith("factory_") else self.backend.act(step.action))
         except Exception as error:
             self.memory.pending["dispatch"] = "ambiguous"
             self.memory.event("dispatch_error", error_type=type(error).__name__, tick=fresh.tick)

@@ -7,11 +7,10 @@ It replaces reactive per-action selection with persistent goals, committed skill
 plans, batched judgments, material accounting, and observation-based verification.
 The default `flat` controller and its timed-run retry behavior are preserved.
 
-**This revision does not play Factorio through a rocket launch.** The executable
-skill catalog still covers the existing mining bootstrap. The `rocket_launch`
-target reaches that verified milestone, then reports an explicit capability
-blocker. No fake late-game actions, mock victories, or assumed technologies are
-used to make the campaign appear complete.
+**A complete native rocket-launch playthrough remains unverified.** The FLE
+controller now includes native production scheduling through rocket construction
+and launch, rather than stopping at the bootstrap capability boundary. Synthetic
+tests and source coverage must not be reported as a successful native campaign.
 
 Offline tests verify controller behavior, not Jev quality or native gameplay.
 At PR publication, local validation was `76 passed, 6 skipped`, with no live Jev
@@ -42,6 +41,37 @@ checkpoint/log files (intentionally not committed). The original flat timed
 run was then resumed with its original cutoff, not extended by another 12 hours.
 Pure-Jev hierarchical operation remains gated by the observed abstention.
 
+### Native production increment, 2026-09-21
+
+The expanded local suite passes **128 tests**. A resumed native Factorio 2.0.77
+session completed `iron_smelting`: it gathered stone, hand-crafted and placed a
+stone furnace, delivered coal and ore, and collected ten natively produced iron
+plates. The original factory and session identity were preserved. This was a
+deterministic-policy trial, not evidence of JEV campaign performance.
+
+An earlier trial exposed an offline character-binding failure. The agent stopped
+with an ambiguous pending action; reconnecting the viewer restored the existing
+character with its 50 ore and five coal intact. Runtime references were reconciled
+without creating replacement items or resetting the world, then the original
+pending binding was verified rather than replayed. Offline binding now fails its
+preconditions and has a regression test. This manual recovery is not a supported
+automatic reconnect mechanism.
+
+The subsequent `steam_power` trial also completed natively at tick 506015.
+It crafted and placed the lab, offshore pump, boiler, and steam engine, built
+water and steam pipes, and connected power poles. The lab had positive energy
+and shared electric network ID 1 with the engine. Electronics and steam-power
+crafting/production research triggers completed without unlocking technologies
+through a script. Output-only fluid boxes required inspecting their actual pipe
+neighbors to identify the connected fluid segment; the pending water connection
+was reconciled without building duplicate pipes.
+
+Evidence remains local in `runs/native-smelting-v4-state.json`,
+`runs/native-steam-state.json`, and their JSONL streams. Lab-driven research, oil
+processing, and rocket completion still require separate live acceptance; tests
+alone do not establish those milestones. The hybrid rocket campaign resumes the
+original timed window, ending at 16:01:15 UTC rather than starting another 12 hours.
+
 ## Run the supported milestone
 
 ```bash
@@ -67,7 +97,36 @@ python -m jev_factorio --controller hierarchical --backend mock \
 ```
 
 Omitting `--target bootstrap_mining` selects the intended `rocket_launch` goal.
-Its current expected result is **blocked after bootstrap**, not victory.
+The mock backend still reports **blocked after bootstrap**, not victory. Only
+the FLE backend supplies the native catalog and factory execution primitives.
+
+## Native production scheduling
+
+The `iron_smelting`, `steam_power`, `automation_science`, and `rocket_launch`
+targets use a bounded recursive compiler over the running Factorio 2.0 base-game
+recipe and technology catalog. It schedules gathering, direct native hand-crafting,
+dedicated machine placement, conserved inventory transfers, physical pipes and
+power poles, science delivery, native research, and rocket construction.
+
+The agent carries solids; this is not a belt-automated factory. Fluid recipes
+select explicit alternatives, with tanks for oil co-products. Research includes
+2.0 craft-item and crude-oil mining triggers. Connection verification reads native
+fluid segment or electric network identities, not the connector's success text.
+Transfer receipts bind to entity unit numbers and actual inserted quantities.
+Machine batches and fuel top-ups respect native item stack sizes. Fluid branches
+reuse pipes on the observed matching fluid segment; multi-output sources select
+an explicit outlet rather than assuming the nearest outlet carries the right fluid.
+Launch completion requires an increase in the native force launch count.
+
+Native hand-crafting requires a connected game client bound to the existing agent
+character. Offline binding is rejected before dispatch. Viewer reconnection and
+server reload are not automatic recovery paths: preserve the checkpoint and world
+and reconcile the character and pending action before another writer starts.
+The native catalog, runtime state, and local run logs are not committed fixtures.
+
+Use `--policy hybrid` to retain audited JEV judgments while allowing deterministic
+compiled fallback after abstention. The default `jev` policy still blocks on
+abstention; fallback is never presented as a successful JEV choice.
 
 ## Live adapter precautions
 
@@ -120,7 +179,9 @@ keyboard/mouse play and must not be reported as such.
 
 | Module | Implemented responsibility |
 | --- | --- |
-| `planning/goals.py` | Dependency ordering, cycle rejection, verified milestone receipts, explicit unsupported terminal goal. |
+| `planning/goals.py` | Dependency ordering, cycle rejection, native milestone and rocket completion checks. |
+| `planning/catalog.py`, `planning/factory.py` | Version-bound native facts and bounded production/research scheduling. |
+| `factory_contract.py`, `backends/native_factory.py`, `lua/` | Bounded commands, native transfers, topology and progress verification. |
 | `planning/materials.py` | Batch requirements, inventory and reservation accounting, co-products, explicit recipe alternatives, bounded cycle rejection. |
 | `skills.py` | Fully specified plans and steps, current-state preconditions, costs, finite execution bounds, observable postconditions. |
 | `judgments.py` | Candidate-specific Choice/Score/Noul questions, request bounds, strict response validation, uncertainty abstention, deterministic ranking. |

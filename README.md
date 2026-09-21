@@ -95,10 +95,30 @@ python -m jev_factorio --controller hierarchical --backend mock --mock-model \
   --checkpoint runs/bootstrap-state.json --log-file runs/bootstrap.jsonl
 ```
 
-This revision validates the controller on the mining bootstrap, **not a complete
-rocket-launch playthrough**. The `rocket_launch` target explicitly reports missing
-late-game capabilities instead of fabricating progress. Live validation remains
-separate from the synthetic tests. The existing flat controller stays the default.
+The FLE hierarchical controller now compiles native production and research
+plans for `iron_smelting`, `steam_power`, `automation_science`, and `rocket_launch`.
+It reads recipes, technology costs, and machine capabilities from the running
+base game rather than assuming fixed research costs. The existing flat controller
+stays the default and remains bootstrap-only.
+
+```bash
+python -m jev_factorio --controller hierarchical --backend fle --resume \
+  --target rocket_launch --policy hybrid --duration-hours 12 \
+  --checkpoint runs/campaign-state.json --log-file runs/campaign.jsonl
+```
+
+`hybrid` records JEV abstentions and uses a deterministic compiled plan when
+needed; `jev` remains strict. The agent carries solids between machines and builds
+physical fluid and electricity connections. Native crafting, inventories,
+research, and the force rocket-launch counter verify progress. Movement and
+resource gathering still use FLE acceleration, not keyboard/mouse gameplay.
+
+**Experimental: no complete native rocket-launch playthrough is verified.**
+Native hand-crafting requires a connected viewer controlling the agent character.
+Live-session resume does not support server reloads or viewer reconnection;
+do not reset the world or discard a pending checkpoint to work around a failure.
+The implementation is restricted to the exported Factorio 2.0 base-game catalog;
+unsupported mods, recipes, or bounded exploration failures stop explicitly.
 
 ## Author
 
