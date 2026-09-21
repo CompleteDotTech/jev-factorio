@@ -11,9 +11,11 @@ def fair_runtime():
         defines = {
             controllers = {character = 1},
             events = {on_tick = 1, on_script_path_request_finished = 2},
+            build_check_type = {manual = 1},
             direction = {north = 0, northeast = 2, east = 4, southeast = 6,
                          south = 8, southwest = 10, west = 12, northwest = 14}
         }
+        prototypes = {entity = {pipe = {}, ["offshore-pump"] = {}}}
         script = {
             get_event_handler = function(event) return handlers[event] end,
             on_event = function(event, callback) handlers[event] = callback end,
@@ -37,7 +39,10 @@ def fair_runtime():
                 return 17
             end,
             find_entities_filtered = function() return {resource} end,
-            find_entity = function() return built_entity end
+            find_entity = function() return built_entity end,
+            can_place_entity = function(parameters)
+                return not site_filter or site_filter(parameters)
+            end
         }
         cursor = {count = 0}
         inventory = {
@@ -201,6 +206,52 @@ def test_place_consumes_existing_stack_and_returns_cursor_remainder(fair_runtime
         assert(cursor.count == 0)
         assert(player.position.x == 0 and player.position.y == 0)
     """)
+
+
+def test_build_site_search_checks_direction_without_moving_or_granting_items(fair_runtime):
+    fair_runtime.execute("""
+        site_filter = function(parameters)
+            return parameters.name == "offshore-pump"
+                and parameters.position.x == 1.5 and parameters.position.y == 0
+                and parameters.direction == defines.direction.east
+        end
+        local before = quantities.pipe
+        local result = storage.fair.find_build_site("offshore-pump", {x = 0, y = 0}, 2)
+        assert(result.position.x == 1.5 and result.position.y == 0)
+        assert(result.direction == defines.direction.east)
+        assert(quantities.pipe == before)
+        assert(cursor.count == 0 and built_entity == nil)
+        assert(player.position.x == 0 and player.position.y == 0)
+    """)
+
+
+def test_place_entity_uses_direction_selected_by_native_buildability(monkeypatch):
+    from fle.env import Direction, Position, Prototype
+    from jev_factorio.backends.fair_actions import FairActions
+
+    fair = object.__new__(FairActions)
+    calls = []
+    approaches = []
+
+    def call(function, *arguments):
+        calls.append((function, arguments))
+        if function == "find_build_site":
+            return {"position": {"x": 1.5, "y": 0}, "direction": Direction.RIGHT.value}
+        return {"name": "offshore-pump", "position": arguments[1]}
+
+    monkeypatch.setattr(fair, "call", call)
+    monkeypatch.setattr(fair, "approach", lambda position, name: approaches.append((position, name)))
+
+    entity = fair.place_entity(
+        Prototype.OffshorePump, Position(x=0, y=0), Direction.UP, exact=False
+    )
+
+    assert calls[0] == ("find_build_site", ("offshore-pump", {"x": 0.0, "y": 0.0}, 8))
+    assert calls[1] == (
+        "place", ("offshore-pump", {"x": 1.5, "y": 0}, Direction.RIGHT.value)
+    )
+    assert approaches[0][0] == Position(x=1.5, y=0)
+    assert entity.position == Position(x=1.5, y=0)
 
 
 def test_failed_build_returns_all_cursor_items(fair_runtime):

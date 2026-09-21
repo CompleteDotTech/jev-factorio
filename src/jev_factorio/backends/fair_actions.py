@@ -114,16 +114,12 @@ class FairActions:
 
         name = prototype.value[0]
         target = self.position(position)
-        self.approach(position, name)
+        direction_value = direction.value
         if not exact:
-            target = json.loads(self.command(
-                "local player = storage.fair.actor(); local position = "
-                "player.surface.find_non_colliding_position(" + json.dumps(name) + ", "
-                "helpers.json_to_table(" + json.dumps(json.dumps(target)) + "), 8, 0.5); "
-                "assert(position, 'No ordinary build site'); rcon.print(helpers.table_to_json(position))"
-            ))
-            self.approach(Position(**target), name)
-        result = self.call("place", name, target, direction.value)
+            site = self.call("find_build_site", name, target, 8)
+            target, direction_value = site["position"], site["direction"]
+        self.approach(Position(**target), name)
+        result = self.call("place", name, target, direction_value)
         return SimpleNamespace(
             name=result["name"], position=Position(**result["position"]),
             drop_position=Position(**result["drop_position"]) if result.get("drop_position") else None,
