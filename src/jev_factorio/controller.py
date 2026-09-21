@@ -426,6 +426,9 @@ class HierarchicalLoop(AgentLoop):
         self.memory.pending["dispatch"] = "returned"
         self._save()
         after = self._observe()  # On failure, pending remains durable for the next iteration.
+        if self._execution_barrier(after):
+            return self._record(snapshot, step.action,
+                                str(outcome) + "; pending retained for reconciliation", after)
         verified = step.satisfied(after)
         if verified:
             self.memory.release(plan.id)

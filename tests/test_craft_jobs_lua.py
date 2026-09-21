@@ -152,3 +152,28 @@ def test_inventory_and_receipt_are_captured_in_same_observation(runtime):
         assert(result.craft_job_inventory.items.pack==result.craft_job.finished)
         assert(result.craft_job_inventory.items.plate==10)
     ''')
+
+
+def test_replaced_event_handler_requires_reconciliation_before_reattachment(runtime):
+    runtime.execute('''
+        storage.campaign.begin_craft_job("job1","pack",10)
+        local previous=handlers[3]
+        handlers[3]=function(event) previous(event) end
+    ''')
+    with pytest.raises(Exception, match="handler changed"):
+        runtime.execute(files("jev_factorio").joinpath("lua/craft_jobs.lua").read_text())
+    assert runtime.eval("begin_calls") == 1
+
+
+def test_observer_wrapping_does_not_recurse_through_mutable_previous_pointer(runtime):
+    runtime.execute('''
+        storage.campaign.begin_craft_job("job1","pack",10)
+        local previous=storage.campaign.observe
+        storage.campaign.observe=function() return previous() end
+    ''')
+    runtime.execute(files("jev_factorio").joinpath("lua/craft_jobs.lua").read_text())
+    runtime.execute('''
+        finish_one()
+        assert(storage.campaign.observe().craft_job.finished==1)
+        assert(begin_calls==1 and previous_calls==1)
+    ''')

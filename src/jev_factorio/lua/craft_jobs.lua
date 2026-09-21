@@ -89,9 +89,11 @@ end
 
 local function install(event_id, key, callback)
     local current = script.get_event_handler(event_id)
+    assert(not jobs[key] or current == jobs[key],
+        "Craft event handler changed; reconcile before attachment")
     if current ~= jobs[key] then jobs[key .. "_previous"] = current end
+    local previous = jobs[key .. "_previous"]
     jobs[key] = function(event)
-        local previous = jobs[key .. "_previous"]
         if previous then previous(event) end
         callback(event)
     end
@@ -129,8 +131,9 @@ install(defines.events.on_player_crafted_item, "crafted_handler", function(event
 end)
 
 if campaign.observe ~= jobs.observe_wrapper then jobs.previous_observe = campaign.observe end
+local previous_observe = jobs.previous_observe
 jobs.observe_wrapper = function()
-    local result = jobs.previous_observe()
+    local result = previous_observe()
     local player, identity = actor()
     result.craft_jobs_protocol, result.craft_job_actor = 1, identity
     -- FLE's earlier inventory read can precede a crafting event. Capture the

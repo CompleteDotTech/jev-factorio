@@ -80,6 +80,7 @@ class ReceiptBackend:
     def complete(self):
         self.state.tick += 100
         self.state.inventory["automation-science-pack"] = 10
+        self.state.factory["produced"]["automation-science-pack"] = 10
         self.state.factory["crafting_queue"] = 0
         self.state.factory["craft_job"].update(status="completed", finished=10,
             last_progress_tick=self.state.tick, completed_tick=self.state.tick)
@@ -324,3 +325,35 @@ def test_cli_rejects_unsupported_background_mode_before_backend_start(monkeypatc
     with pytest.raises(SystemExit) as error:
         main.cli()
     assert error.value.code == 2
+
+
+def test_background_failure_after_independent_dispatch_retains_pending(tmp_path):
+    backend = ReceiptBackend()
+    loop = controller(backend, tmp_path)
+    loop.step()
+    original = backend.execute
+    def cancel_after_execute(action, parameters):
+        result = original(action, parameters)
+        backend.state.factory["craft_job"]["status"] = "invalid"
+        return result
+    backend.execute = cancel_after_execute
+    record = loop.step()
+    assert record["status"] == "uncertain" and record["verified"] is False
+    assert loop.memory.pending["dispatch"] == "returned"
+    assert loop.memory.pending["action"] == "factory_gather"
+    assert backend.state.inventory["iron-ore"] == 5
+    assert len(backend.calls) == 2
+    loop.step()
+    assert loop.memory.pending and len(backend.calls) == 2
+
+
+def test_craft_completion_does_not_replace_native_milestone_production_counter(tmp_path):
+    from jev_factorio.planning.goals import completed
+
+    backend = ReceiptBackend()
+    loop = controller(backend, tmp_path)
+    loop.step()
+    backend.complete()
+    backend.state.factory["produced"] = {}
+    assert loop._job().observe(backend.state)
+    assert not completed("automation_science", backend.state)
