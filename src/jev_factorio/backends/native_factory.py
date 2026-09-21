@@ -47,7 +47,7 @@ class NativeFactory:
         self.backend._fair.approach(Position(**state["position"]), state["name"])
 
     def observe(self, snapshot: GameSnapshot) -> GameSnapshot:
-        from fle.env import Resource
+        from fle.env import Position, Resource
 
         raw = self.command("rcon.print(helpers.table_to_json(storage.campaign.observe()))")
         factory = json.loads(raw)
@@ -66,9 +66,28 @@ class NativeFactory:
         snapshot.victory = factory["rockets_launched"] > factory["rocket_baseline"]
         snapshot.victory_source = "native:base-game-rocket-launch" if snapshot.victory else None
         snapshot.tick = factory["tick"]
+        # FLE's Wood resource lookup can retain a decorative or already
+        # depleted tree.  Do not commit a fair gather from that stale adapter
+        # coordinate: use the adapter's read-only native selector, which
+        # admits only a valid and minable tree around the bound player.  It
+        # neither walks nor starts mining; FairActions.harvest still approaches
+        # and verifies normal reach before native player mining.
+        native_wood = self.backend._fair.call("next_mine_target", "wood", 64)
+        candidate = native_wood.get("position") if isinstance(native_wood, dict) else None
+        if isinstance(candidate, dict):
+            horizontal, vertical = candidate.get("x"), candidate.get("y")
+            if (isinstance(horizontal, (int, float)) and not isinstance(horizontal, bool)
+                    and isinstance(vertical, (int, float)) and not isinstance(vertical, bool)
+                    and math.isfinite(horizontal) and math.isfinite(vertical)):
+                location = Position(x=float(horizontal), y=float(vertical))
+                self.backend._resources["wood"] = location
+                snapshot.nearby_resources["wood"] = math.hypot(
+                    location.x - snapshot.player_position[0],
+                    location.y - snapshot.player_position[1],
+                )
         for name, resource in (
             ("copper-ore", Resource.CopperOre), ("stone", Resource.Stone),
-            ("wood", Resource.Wood), ("water", Resource.Water), ("crude-oil", Resource.CrudeOil),
+            ("water", Resource.Water), ("crude-oil", Resource.CrudeOil),
         ):
             try:
                 location = self.backend._tools.nearest(resource)
