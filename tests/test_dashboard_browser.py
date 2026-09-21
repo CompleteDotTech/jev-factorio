@@ -144,6 +144,9 @@ def test_studio_layout_fits_broadcast_canvas_without_capture(live):
     assert page.evaluate("document.querySelector('#game-video').srcObject === null")
     page.evaluate("notice('Legacy log: completed decisions only. In-flight timing is unavailable.')")
     stage = page.locator("#game-stage").bounding_box()
+    assert stage["x"] == pytest.approx(277)
+    assert stage["y"] == pytest.approx(111)
+    assert stage["width"] == pytest.approx(1342)
     assert stage["width"] > 1300
     assert stage["width"] / stage["height"] == pytest.approx(16 / 9)
     for selector in ("body", ".workspace", ".center-column", ".game-panel", "#game-stage"):
@@ -159,6 +162,34 @@ def test_studio_layout_fits_broadcast_canvas_without_capture(live):
     playwright.expect(page.locator(".thinking")).not_to_be_visible()
     page.keyboard.press("b")
     playwright.expect(page.locator(".thinking")).to_be_visible()
+    assert not errors
+
+
+def test_factory_theme_is_accessible_without_external_artwork(live):
+    page, writer, url, errors = live
+    page.goto(url)
+    seed(writer)
+    playwright.expect(page).to_have_title("JEV · Factorio Mission Control")
+    playwright.expect(page.locator(".brand-gear")).to_be_visible()
+    assert page.locator(".brand-gear").get_attribute("aria-hidden") == "true"
+    assert page.locator(".panel").first.evaluate("(element) => getComputedStyle(element).borderRadius") == "4px"
+    assert "factory-steel.png" in page.locator(".topbar").evaluate("(element) => getComputedStyle(element).backgroundImage")
+    assert "factory-steel.png" not in page.locator(".thinking").evaluate("(element) => getComputedStyle(element).backgroundImage")
+    contrast = page.evaluate("""() => {
+        const style = getComputedStyle(document.documentElement);
+        const luminance = (hex) => {
+            const values = hex.trim().slice(1).match(/../g).map((pair) => parseInt(pair, 16) / 255)
+                .map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+            return values[0] * 0.2126 + values[1] * 0.7152 + values[2] * 0.0722;
+        };
+        return (luminance(style.getPropertyValue("--muted")) + 0.05) /
+               (luminance(style.getPropertyValue("--panel")) + 0.05);
+    }""")
+    assert contrast >= 4.5
+    page.locator("#freeze").focus()
+    assert page.locator("#freeze").evaluate("(element) => getComputedStyle(element).outlineStyle") == "solid"
+    assert page.evaluate("""() => performance.getEntriesByType("resource")
+        .every((resource) => new URL(resource.name).origin === location.origin)""")
     assert not errors
 
 

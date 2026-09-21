@@ -176,6 +176,22 @@ controller invocation. Returning to a browser-cached page reconnects telemetry
 only. Leaving the page releases all capture tracks; the video preview stays
 stopped until the user starts capture again and grants any required permissions.
 
+### Factory-inspired presentation
+
+The dashboard uses an industrial charcoal-and-amber palette, beveled steel
+panels, hazard markings, inventory-style slots, and an original inline gear
+icon. A locally served generated steel texture is subdued by a 92%-opaque
+dark tint on the page background and header; data panels stay opaque and
+untextured. See [asset provenance and prompt](DASHBOARD_ART.md).
+Green remains an evidence-based status indicator, not decoration.
+There are no external fonts, game-art downloads, or decorative activity
+animations. The same capture controls, evidence inspectors, keyboard focus,
+reduced-motion behavior, and responsive layouts remain available.
+
+The 1920×1080 studio gameplay cutout retains its existing position and size.
+Theme assets can be updated and the OBS browser source refreshed without
+restarting the game, controller, supervisor, audio/video sender, or broadcast.
+
 ## Observer and transport contract
 
 `dashboard.attach()` decorates one already-created hierarchical loop instance,
