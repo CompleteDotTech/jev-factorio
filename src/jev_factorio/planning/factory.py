@@ -72,6 +72,15 @@ class FactoryPlanner:
             return recipe, self._research(unlocks[0], path)
         return recipe, None
 
+    def _fair_wood_identity(self, target: int) -> str | None:
+        """Return the identity of the exact tree admitted by fair observation."""
+        targets = self.factory.get("fair_resource_targets")
+        evidence = targets.get("wood") if isinstance(targets, dict) else None
+        unit_number = evidence.get("unit_number") if isinstance(evidence, dict) else None
+        if type(unit_number) is not int or unit_number <= 0:
+            return None
+        return f"wood:target:{target}:tree:{unit_number}"
+
     def _need(self, item, amount, path=()):
         have = self.snapshot.inventory.get(item, 0)
         if have >= amount:
@@ -92,15 +101,24 @@ class FactoryPlanner:
             # chooses any later tree normally.
             quantity = 1 if item == "wood" else min(50, missing)
             target = have + quantity
+            identity = None
+            if item == "wood":
+                identity = self._fair_wood_identity(target)
+                # The wood plan is authorized only by a live, read-only
+                # selector result.  Without an entity identity, retain the
+                # existing failure budget and ask the normal exploration path
+                # for a fresh observation rather than dispatching a cached
+                # coordinate.
+                if identity is None:
+                    return self._explore(item)
             return self._plan(
                 "factory_gather", "inventory", item, target,
                 parameters={"resource": item, "quantity": quantity}, timeout=18000,
                 description=f"Gather {quantity} observed {item}; inventory target {target}",
-                # Wood failure budgets belong to the exact committed
-                # postcondition. A historical unverified forest target must
-                # not suppress a later, smaller observed fair mine, and is
-                # retained in memory.
-                identity=f"{item}:target:{target}" if item == "wood" else None,
+                # Wood failure budgets belong to the exact observed tree and
+                # postcondition.  Failed historical trees remain recorded and
+                # still suppress that exact native entity.
+                identity=identity,
             )
         recipe, prerequisite = self._recipe(item, path)
         if prerequisite:

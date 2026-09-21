@@ -108,7 +108,10 @@ fair.next_mine_target = function(item, radius)
         end
     end
     if not best then return {} end
-    return {position = {x = best.position.x, y = best.position.y}}
+    return {
+        position = {x = best.position.x, y = best.position.y},
+        unit_number = best.unit_number,
+    }
 end
 
 fair.observe = function()

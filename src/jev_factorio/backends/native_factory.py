@@ -74,17 +74,30 @@ class NativeFactory:
         # and verifies normal reach before native player mining.
         native_wood = self.backend._fair.call("next_mine_target", "wood", 64)
         candidate = native_wood.get("position") if isinstance(native_wood, dict) else None
+        unit_number = native_wood.get("unit_number") if isinstance(native_wood, dict) else None
         if isinstance(candidate, dict):
             horizontal, vertical = candidate.get("x"), candidate.get("y")
             if (isinstance(horizontal, (int, float)) and not isinstance(horizontal, bool)
                     and isinstance(vertical, (int, float)) and not isinstance(vertical, bool)
-                    and math.isfinite(horizontal) and math.isfinite(vertical)):
+                    and math.isfinite(horizontal) and math.isfinite(vertical)
+                    and type(unit_number) is int and unit_number > 0):
                 location = Position(x=float(horizontal), y=float(vertical))
                 self.backend._resources["wood"] = location
                 snapshot.nearby_resources["wood"] = math.hypot(
                     location.x - snapshot.player_position[0],
                     location.y - snapshot.player_position[1],
                 )
+                # The scheduler's wood-plan identity must bind to this
+                # read-only native observation.  A stale FLE coordinate has
+                # neither a validated tree nor its Factorio entity identity,
+                # and historical failures for one tree must still apply if
+                # that same entity is observed again.
+                factory["fair_resource_targets"] = {
+                    "wood": {
+                        "unit_number": unit_number,
+                        "position": {"x": location.x, "y": location.y},
+                    }
+                }
         for name, resource in (
             ("copper-ore", Resource.CopperOre), ("stone", Resource.Stone),
             ("water", Resource.Water), ("crude-oil", Resource.CrudeOil),

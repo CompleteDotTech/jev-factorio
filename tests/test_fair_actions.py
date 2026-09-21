@@ -31,7 +31,7 @@ def fair_runtime():
             valid = true, unit_number = 9,
             prototype = {collision_box = {}, collision_mask = {}}
         }
-        resource = {valid = true, minable = true, position = {x = 2, y = 0}}
+        resource = {valid = true, minable = true, unit_number = 9, position = {x = 2, y = 0}}
         quantities = {coal = 0, pipe = 4}
         surface = {
             request_path = function(parameters)
@@ -154,7 +154,7 @@ def test_next_mining_target_uses_actor_position_and_skips_depleted_entities(fair
     fair_runtime.execute("""
         local depleted = {valid = true, minable = false, position = {x = 30, y = 0}}
         local distant = {valid = true, minable = true, position = {x = 45, y = 0}}
-        local nearby = {valid = true, minable = true, position = {x = 31, y = 0}}
+        local nearby = {valid = true, minable = true, unit_number = 31, position = {x = 31, y = 0}}
         player.position = {x = 30, y = 0}
         surface.find_entities_filtered = function(filter)
             assert(filter.type == "tree")
@@ -164,6 +164,7 @@ def test_next_mining_target_uses_actor_position_and_skips_depleted_entities(fair
         end
         local target = storage.fair.next_mine_target("wood", 64)
         assert(target.position.x == 31 and target.position.y == 0)
+        assert(target.unit_number == nearby.unit_number)
         assert(player.position.x == 30 and player.position.y == 0)
         assert(not player.walking_state or not player.walking_state.walking)
         assert(not player.mining_state or not player.mining_state.mining)
