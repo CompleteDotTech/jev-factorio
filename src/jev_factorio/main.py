@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import os
+from contextlib import ExitStack
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from .backends.mock import MockBackend
 from .loop import AgentLoop
+from .research_log import ResearchLog, ResearchLogError
 
 
 def make_backend(name: str, resume: bool = False, adopt_session: bool = False):
@@ -40,6 +42,7 @@ def cli() -> None:
     p.add_argument("--confidence-floor", type=float,
                    default=float(os.environ.get("JEV_CONFIDENCE_FLOOR", "0.45")))
     p.add_argument("--log-file", default=os.environ.get("JEV_LOG_FILE"))
+    p.add_argument("--run-dir", help="Fresh directory for opt-in durable causal events; does not change --log-file")
     p.add_argument("--controller", choices=("flat", "hierarchical"), default="flat")
     p.add_argument("--target", choices=("bootstrap_mining", "iron_smelting", "steam_power",
                                        "automation_science", "rocket_launch"), default="rocket_launch")
@@ -68,44 +71,68 @@ def cli() -> None:
         p.error("--steps must be nonnegative")
     if not 0 <= args.confidence_floor <= 1:
         p.error("--confidence-floor must be finite and in [0, 1]")
-    options = dict(confidence_floor=args.confidence_floor,
-                   tick_seconds=args.tick_seconds, log_file=args.log_file)
-    if args.controller == "flat":
-        if args.mock_model or args.checkpoint or args.resume_controller or args.model or args.policy != "jev":
-            p.error("Campaign options require --controller hierarchical")
-        loop = AgentLoop(make_backend(args.backend, resume=args.resume), **options)
-    else:
-        from .controller import HierarchicalLoop
-        from .jev_client import MockJevClient, make_client
+    with ExitStack() as stack:
+        def attach_research_log() -> None:
+            if not args.run_dir:
+                return
+            directory = Path(args.run_dir).resolve()
+            reserved = {directory / "events.jsonl", directory / "manifest.json"}
+            if any(Path(value).resolve() in reserved for value in
+                   (args.log_file, args.checkpoint) if value):
+                p.error("Research files must be separate from legacy logs and checkpoints")
+            # Deliberate allowlist: never serialize argv, the environment, or credentials.
+            metadata = {key: getattr(args, key) for key in
+                        ("backend", "controller", "policy", "target", "model", "steps",
+                         "duration_hours", "tick_seconds", "confidence_floor", "resume_controller")}
+            metadata["checkpoint_enabled"] = args.checkpoint is not None
+            try:
+                options["research_log"] = stack.enter_context(ResearchLog(
+                    directory, metadata=metadata,
+                    secrets=(os.environ.get("TYPESAFE_API_KEY", ""),
+                             os.environ.get("CLOUDFLARE_API_TOKEN", ""))))
+            except ResearchLogError:
+                p.error("Cannot create a fresh --run-dir; use a new writable directory")
 
-        if args.backend not in {"mock", "fle"}:
-            p.error("Hierarchical control currently supports mock and FLE backends")
-        if args.mock_model and (args.backend != "mock" or args.policy == "deterministic"):
-            p.error("--mock-model requires --backend mock and a model-based policy")
-        if args.backend != "mock" and (not args.checkpoint or args.tick_seconds <= 0):
-            p.error("Live hierarchical control requires --checkpoint and a positive --tick-seconds")
-        if args.checkpoint and Path(args.checkpoint).exists() and not args.resume_controller:
-            p.error("Checkpoint exists; explicitly resume or use a new path")
-        if args.resume_controller:
-            if not args.checkpoint or not Path(args.checkpoint).is_file():
-                p.error("--resume-controller requires an existing --checkpoint")
-            if args.backend == "fle" and not args.resume:
-                p.error("Resuming live controller memory requires --resume to preserve the world")
-        # Resolve credentials before starting a backend that initializes a world.
-        try:
-            client = (None if args.policy == "deterministic" else
-                      MockJevClient() if args.mock_model else
-                      make_client(allow_mock=False, model=args.model))
-        except ValueError as error:
-            p.error(str(error))
-        loop = HierarchicalLoop(make_backend(args.backend, resume=args.resume,
-                                             adopt_session=args.adopt_session), jev=client,
-                                target=args.target, policy=args.policy, checkpoint=args.checkpoint,
-                                resume_controller=args.resume_controller, **options)
-    if args.duration_hours is not None:
-        loop.run(steps=None, duration_seconds=args.duration_hours * 3600)
-    else:
-        loop.run(steps=args.steps if args.steps is not None else 8)
+        options = dict(confidence_floor=args.confidence_floor,
+                       tick_seconds=args.tick_seconds, log_file=args.log_file)
+        if args.controller == "flat":
+            if args.mock_model or args.checkpoint or args.resume_controller or args.model or args.policy != "jev":
+                p.error("Campaign options require --controller hierarchical")
+            attach_research_log()
+            loop = AgentLoop(make_backend(args.backend, resume=args.resume), **options)
+        else:
+            from .controller import HierarchicalLoop
+            from .jev_client import MockJevClient, make_client
+
+            if args.backend not in {"mock", "fle"}:
+                p.error("Hierarchical control currently supports mock and FLE backends")
+            if args.mock_model and (args.backend != "mock" or args.policy == "deterministic"):
+                p.error("--mock-model requires --backend mock and a model-based policy")
+            if args.backend != "mock" and (not args.checkpoint or args.tick_seconds <= 0):
+                p.error("Live hierarchical control requires --checkpoint and a positive --tick-seconds")
+            if args.checkpoint and Path(args.checkpoint).exists() and not args.resume_controller:
+                p.error("Checkpoint exists; explicitly resume or use a new path")
+            if args.resume_controller:
+                if not args.checkpoint or not Path(args.checkpoint).is_file():
+                    p.error("--resume-controller requires an existing --checkpoint")
+                if args.backend == "fle" and not args.resume:
+                    p.error("Resuming live controller memory requires --resume to preserve the world")
+            # Resolve credentials before starting a backend that initializes a world.
+            try:
+                client = (None if args.policy == "deterministic" else
+                          MockJevClient() if args.mock_model else
+                          make_client(allow_mock=False, model=args.model))
+            except ValueError as error:
+                p.error(str(error))
+            attach_research_log()
+            loop = HierarchicalLoop(make_backend(args.backend, resume=args.resume,
+                                                 adopt_session=args.adopt_session), jev=client,
+                                    target=args.target, policy=args.policy, checkpoint=args.checkpoint,
+                                    resume_controller=args.resume_controller, **options)
+        if args.duration_hours is not None:
+            loop.run(steps=None, duration_seconds=args.duration_hours * 3600)
+        else:
+            loop.run(steps=args.steps if args.steps is not None else 8)
 
 
 if __name__ == "__main__":
