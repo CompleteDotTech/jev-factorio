@@ -855,7 +855,8 @@ def test_ambiguous_first_connection_allows_retained_surplus_stock():
     assert controller._absent_ambiguous_connection(plan, plan.steps[0], state)
 
 
-def test_ambiguous_connection_ignores_connectors_from_verified_prior_plan():
+@pytest.mark.parametrize("remaining_stock", [41, 42])
+def test_ambiguous_connection_cannot_infer_connector_age_from_fluid(remaining_stock):
     plan = Plan(
         id="factory:factory_connect:", goal="rocket_launch", description="connect",
         steps=[Step(
@@ -866,7 +867,7 @@ def test_ambiguous_connection_ignores_connectors_from_verified_prior_plan():
             },
         )],
     )
-    state = snapshot(inventory={"pipe": 41})
+    state = snapshot(inventory={"pipe": remaining_stock})
     state.factory["entities"] = {
         "utility:boiler": machine("boiler"),
         "utility:engine": machine("steam-engine"),
@@ -890,12 +891,12 @@ def test_ambiguous_connection_ignores_connectors_from_verified_prior_plan():
         reservations={plan.id: {"pipe": 41}}, last_tick=10, status="uncertain",
     )
 
-    assert controller._absent_ambiguous_connection(plan, plan.steps[0], state)
+    assert not controller._absent_ambiguous_connection(plan, plan.steps[0], state)
 
     state.factory["connectors"]["pipe"].append({
         "unit_number": 780,
         "position": {"x": -26.5, "y": -29.5},
-        "fluid": "steam",
+        "fluid": "water",
     })
     state.factory["force_entity_counts"]["pipe"] = 10
     assert not controller._absent_ambiguous_connection(plan, plan.steps[0], state)
