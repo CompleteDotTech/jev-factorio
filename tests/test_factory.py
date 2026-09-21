@@ -51,7 +51,7 @@ def snapshot(**changes):
 
 def machine(name="stone-furnace", **changes):
     result = {"name": name, "unit_number": 17, "position": {"x": 0, "y": 0},
-              "fuel": {}, "input": {}, "output": {}, "energy": 0}
+              "fuel": {}, "input": {}, "output": {}, "fluids": {}, "energy": 0}
     return {**result, **changes}
 
 
@@ -416,11 +416,15 @@ def test_lua_observation_counts_force_entities_without_mutation():
             end
         }
         pump = {valid = true, name = "offshore-pump"}
+        pipe = {
+            valid = true, name = "pipe", unit_number = 42,
+            position = {x = 1.5, y = 2.5}, fluidbox = {{name = "water"}}
+        }
         local surface = {
             find_entities_filtered = function(filter)
                 assert(filter.force == force)
                 observations = observations + 1
-                return {pump}
+                return {pump, pipe}
             end
         }
         local agent = {valid = true, force = force, surface = surface}
@@ -433,6 +437,12 @@ def test_lua_observation_counts_force_entities_without_mutation():
     lua.execute("""
         local observed = storage.campaign.observe()
         assert(observed.force_entity_counts["offshore-pump"] == 1)
+        assert(observed.force_entity_counts.pipe == 1)
+        assert(#observed.connectors.pipe == 1)
+        assert(observed.connectors.pipe[1].unit_number == 42)
+        assert(observed.connectors.pipe[1].position.x == 1.5)
+        assert(observed.connectors.pipe[1].fluid == "water")
+        assert(#observed.connectors["small-electric-pole"] == 0)
         assert(observations == 1)
         assert(pump.valid and pump.name == "offshore-pump")
         assert(next(storage.campaign.entities) == nil)
@@ -749,7 +759,8 @@ def test_ambiguous_placement_stays_pending_without_absence_proof(
 
 @pytest.mark.parametrize("change", [
     "missing_counts", "spent_material", "changed_reservation", "missing_role",
-    "missing_crafting_queue", "craft_in_flight",
+    "missing_connectors", "incomplete_connectors", "same_fluid_connector",
+    "empty_connector", "dry_source",
 ])
 def test_ambiguous_connection_reconciliation_fails_closed(change):
     plan = Plan(
@@ -787,12 +798,26 @@ def test_ambiguous_connection_reconciliation_fails_closed(change):
         controller.memory.reservations[plan.id]["pipe"] = 40
     elif change == "missing_role":
         state.factory["entities"].pop("utility:water")
-    elif change == "missing_crafting_queue":
+    elif change == "missing_connectors":
         state.factory["force_entity_counts"]["pipe"] = 9
-        state.factory.pop("crafting_queue")
-    elif change == "craft_in_flight":
+    elif change == "incomplete_connectors":
         state.factory["force_entity_counts"]["pipe"] = 9
-        state.factory["crafting_queue"] = 1
+        state.factory["connectors"] = {"pipe": [
+            {"unit_number": index, "position": {"x": index + 0.5, "y": 0.5}, "fluid": "water"}
+            for index in range(1, 9)
+        ]}
+        state.factory["entities"]["utility:water"]["fluids"] = {"water": 100}
+    elif change in {"same_fluid_connector", "empty_connector", "dry_source"}:
+        state.factory["force_entity_counts"]["pipe"] = 1
+        connector_fluid = {
+            "same_fluid_connector": "water", "empty_connector": "", "dry_source": "steam",
+        }[change]
+        state.factory["connectors"] = {"pipe": [{
+            "unit_number": 1, "position": {"x": 0.5, "y": 0.5},
+            "fluid": connector_fluid,
+        }]}
+        if change != "dry_source":
+            state.factory["entities"]["utility:water"]["fluids"] = {"water": 100}
     assert not controller._absent_ambiguous_connection(plan, plan.steps[0], state)
 
 
@@ -839,10 +864,18 @@ def test_ambiguous_connection_ignores_connectors_from_verified_prior_plan():
     )
     state = snapshot(inventory={"pipe": 41})
     state.factory["entities"] = {
-        "utility:boiler": machine("boiler"),
+        "utility:boiler": machine("boiler", fluids={"steam": 200}),
         "utility:engine": machine("steam-engine"),
     }
     state.factory["force_entity_counts"] = {"pipe": 9}
+    state.factory["connectors"] = {"pipe": [
+        {
+            "unit_number": 770 + index,
+            "position": {"x": -37.5 + index, "y": -27.5},
+            "fluid": "water",
+        }
+        for index in range(1, 10)
+    ]}
     controller = object.__new__(HierarchicalLoop)
     controller.memory = CampaignMemory(
         session_id="test-factory", target="rocket_launch", active_goal="rocket_launch",
@@ -854,6 +887,14 @@ def test_ambiguous_connection_ignores_connectors_from_verified_prior_plan():
     )
 
     assert controller._absent_ambiguous_connection(plan, plan.steps[0], state)
+
+    state.factory["connectors"]["pipe"].append({
+        "unit_number": 780,
+        "position": {"x": -26.5, "y": -29.5},
+        "fluid": "steam",
+    })
+    state.factory["force_entity_counts"]["pipe"] = 10
+    assert not controller._absent_ambiguous_connection(plan, plan.steps[0], state)
 
 
 def test_ambiguous_connection_reconciles_without_dispatching():

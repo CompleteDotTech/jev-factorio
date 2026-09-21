@@ -188,22 +188,44 @@ class HierarchicalLoop(AgentLoop):
         count = counts.get(kind, 0) if isinstance(counts, dict) else None
         retained = all(snapshot.inventory.get(item, 0) >= quantity
                        for item, quantity in costs.items())
-        exactly_retained = all(snapshot.inventory.get(item, 0) == quantity
-                               for item, quantity in costs.items())
-        no_craft = (type(snapshot.factory.get("crafting_queue")) is int
-                    and snapshot.factory["crafting_queue"] == 0)
+        connectors = snapshot.factory.get("connectors")
+        observed = connectors.get(kind) if isinstance(connectors, dict) else None
+        complete_connectors = bool(
+            isinstance(observed, list) and type(count) is int and len(observed) == count
+            and all(
+                isinstance(connector, dict)
+                and type(connector.get("unit_number")) is int
+                and connector["unit_number"] > 0
+                and isinstance(connector.get("position"), dict)
+                and type(connector["position"].get("x")) in {int, float}
+                and type(connector["position"].get("y")) in {int, float}
+                for connector in observed
+            )
+        )
+        fluid = parameters.get("fluid")
+        source_fluids = entities.get(source, {}).get("fluids", {})
+        source_amount = source_fluids.get(fluid, 0) if isinstance(source_fluids, dict) else None
+        other_fluid_connectors = bool(
+            kind == "pipe" and count and complete_connectors
+            and isinstance(fluid, str) and fluid
+            and type(source_amount) in {int, float} and source_amount > 0
+            and all(
+                isinstance(connector.get("fluid"), str)
+                and connector["fluid"] not in {"", fluid}
+                for connector in observed
+            )
+        )
         return bool(
             source in entities and target in entities and kind in {"pipe", "small-electric-pole"}
-            # A native zero count proves a first dispatch placed nothing even
-            # when the player has surplus stock.  With connectors from earlier
-            # verified plans, fair placement debits each new connector, so exact
-            # retention of the sole reserved material proves this attempt placed
-            # none; no in-flight hand craft may mask that debit.
+            # A native zero count proves a first dispatch placed nothing.  When
+            # earlier pipes exist, complete per-entity telemetry may instead
+            # prove that every pipe carries another fluid.  Fair construction
+            # starts at the fluid-bearing source, so a partial intended route
+            # would expose either the requested fluid or an empty new pipe.
             and isinstance(counts, dict)
             and type(count) is int and count >= 0
             and set(costs) == {kind} and reserved == costs
-            and ((count == 0 and retained)
-                 or (count > 0 and exactly_retained and no_craft))
+            and retained and (count == 0 or other_fluid_connectors)
         )
 
     def _verify_pending(self, snapshot: GameSnapshot) -> dict:
