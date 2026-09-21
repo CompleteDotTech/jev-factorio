@@ -41,3 +41,18 @@ def test_cli_loads_dotenv_without_overriding_environment(
         assert isinstance(captured["client"], MockJevClient)
     assert captured["tick_seconds"] == 3
     assert captured["steps"] == 0
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--backend", "mock"],
+    ["--backend", "fle", "--resume"],
+    ["--backend", "fle", "--controller", "hierarchical"],
+    ["--backend", "fle", "--controller", "hierarchical", "--resume", "--resume-controller"],
+])
+def test_adoption_invalid_modes_fail_before_backend(monkeypatch, tmp_path, arguments):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["jev-factorio", "--adopt-session", *arguments])
+    monkeypatch.setattr(main, "make_backend", lambda *args, **kwargs: pytest.fail("Backend started"))
+    with pytest.raises(SystemExit) as error:
+        main.cli()
+    assert error.value.code == 2

@@ -16,6 +16,8 @@ GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/systemone"  # confirm path agains
 
 
 class JevClient:
+    answer_quantum = 0.01
+
     def __init__(self, api_key: str | None = None, base_url: str = API_URL,
                  model: str = "jev-latest"):
         self.api_key = api_key or os.environ.get("TYPESAFE_API_KEY", "")

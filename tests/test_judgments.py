@@ -129,3 +129,45 @@ def test_maximum_choice_uses_254_candidates_plus_observe():
     assert len(offered) == 254
     assert len(questions["candidate"]["criteria"]) == 255
     assert len(questions) == 763  # schema construction only; no live provider call
+
+
+@pytest.mark.parametrize(("probabilities", "score"), [
+    ([0.56, 0.28, 0.07, 0.05, 0.03], 0.71),
+    ([0.63, 0.27, 0.05, 0.03, 0.02], 0.56),
+])
+def test_observed_provider_rounding_is_consistent(probabilities, score):
+    levels = ["none", "minor", "moderate", "major", "unacceptable"]
+    questions = {"impact": {"type": "score", "criteria": levels}}
+    answers = {"impact": {
+        "type": "score", "score": score, "confidence": 0.53,
+        "legend": {str(index): level for index, level in enumerate(levels)},
+        "probabilities": {str(index): value for index, value in enumerate(probabilities)},
+    }}
+    original = deepcopy(answers)
+    validate_answers(questions, answers, quantum=0.01)
+    assert answers == original
+    answers["impact"]["score"] = 1.2
+    with pytest.raises(InvalidJudgment, match="conflicts"):
+        validate_answers(questions, answers, quantum=0.01)
+
+
+def test_provider_rounding_does_not_allow_invalid_distribution():
+    _, state, questions = batch()
+    answers = MockJevClient().evaluate(state, questions)
+    answers["candidate"]["probabilities"][answers["candidate"]["choice"]] = 0.8
+    with pytest.raises(InvalidJudgment, match="sum"):
+        validate_answers(questions, answers, quantum=0.01)
+
+
+def test_provider_rounding_does_not_disable_confidence_gate():
+    plans, state, _ = batch()
+
+    class RoundedLowConfidence(MockJevClient):
+        answer_quantum = 0.01
+
+        def evaluate(self, state, questions):
+            answers = super().evaluate(state, questions)
+            answers["candidate"]["confidence"] = 0.1
+            return answers
+
+    assert select_plan(RoundedLowConfidence(), state, plans).plan_id is None

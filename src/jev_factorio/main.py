@@ -11,7 +11,7 @@ from .backends.mock import MockBackend
 from .loop import AgentLoop
 
 
-def make_backend(name: str, resume: bool = False):
+def make_backend(name: str, resume: bool = False, adopt_session: bool = False):
     if name == "mock":
         return MockBackend()
     if name == "play_api":
@@ -21,7 +21,7 @@ def make_backend(name: str, resume: bool = False):
     if name == "fle":
         from .backends.fle import FleBackend
         b = FleBackend()
-        b.start(resume=resume)
+        b.start(resume=resume, adopt_session=adopt_session)
         return b
     raise SystemExit(f"unknown backend: {name}")
 
@@ -47,6 +47,8 @@ def cli() -> None:
     p.add_argument("--model", help="Provider-specific model ID; pin it for reproducible evaluation")
     p.add_argument("--checkpoint", help="Session-bound controller checkpoint, not a game save")
     p.add_argument("--resume-controller", action="store_true")
+    p.add_argument("--adopt-session", action="store_true",
+                   help="Explicitly identify an older live FLE session without resetting it")
     args = p.parse_args()
     if args.duration_hours is not None and (
         not 0 < args.duration_hours < float("inf")
@@ -56,6 +58,11 @@ def cli() -> None:
         p.error("--tick-seconds must be finite and nonnegative")
     if args.resume and args.backend != "fle":
         p.error("--resume requires --backend fle")
+    if args.adopt_session and (
+        args.controller != "hierarchical" or args.backend != "fle"
+        or not args.resume or args.resume_controller
+    ):
+        p.error("--adopt-session requires hierarchical FLE --resume and a new checkpoint")
     if args.steps is not None and args.steps < 0:
         p.error("--steps must be nonnegative")
     if not 0 <= args.confidence_floor <= 1:
@@ -90,7 +97,8 @@ def cli() -> None:
                       make_client(allow_mock=False, model=args.model))
         except ValueError as error:
             p.error(str(error))
-        loop = HierarchicalLoop(make_backend(args.backend, resume=args.resume), jev=client,
+        loop = HierarchicalLoop(make_backend(args.backend, resume=args.resume,
+                                             adopt_session=args.adopt_session), jev=client,
                                 target=args.target, policy=args.policy, checkpoint=args.checkpoint,
                                 resume_controller=args.resume_controller, **options)
     if args.duration_hours is not None:

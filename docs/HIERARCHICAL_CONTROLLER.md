@@ -14,11 +14,33 @@ blocker. No fake late-game actions, mock victories, or assumed technologies are
 used to make the campaign appear complete.
 
 Offline tests verify controller behavior, not Jev quality or native gameplay.
-The fake-FLE telemetry test checks mapping and chest connectivity, not a live
-server. Local validation: `76 passed, 6 skipped` (the optional FLE/lupa dependency
-tests were skipped). No live Jev request or native Factorio run was made for this
-change. CI runs the core suite on Python 3.10 and 3.12; optional live dependencies
-are not installed there either.
+At PR publication, local validation was `76 passed, 6 skipped`, with no live Jev
+or native Factorio run. CI runs the core suite on Python 3.10 and 3.12; optional
+live dependencies are not installed there.
+
+### Post-merge native integration, 2026-09-21
+
+The full local dependency environment passes **96 tests**. An existing marked
+FLE session was explicitly adopted without resetting its characters or factory.
+The native trials were single-writer, with the earlier flat controller stopped
+first:
+
+- Initial Jev trial: four requests, no actions. Rounded provider distributions
+  and scores exposed overly tight numeric consistency checks.
+- Revised Jev trial, pinned to `jev-1.13.0`: four requests, no actions. Numeric
+  checks passed, but choice confidence remained below the unchanged 0.45 floor.
+  The controller correctly stopped as blocked; this is not a Jev success claim.
+- Explicit deterministic-policy trial: two observed, verified actions gathered
+  five coal and refueled the existing iron drill. The checkpoint reached the
+  bootstrap milestone with the drill working and its output chest connected.
+  The chest already contained 633 iron ore from the preceding flat run. This
+  trial validates resumed execution and refueling, not hierarchical placement
+  from an empty world or an end-to-end campaign.
+
+Local evidence is in `runs/hierarchical-native*.jsonl` and the corresponding
+checkpoint/log files (intentionally not committed). The original flat timed
+run was then resumed with its original cutoff, not extended by another 12 hours.
+Pure-Jev hierarchical operation remains gated by the observed abstention.
 
 ## Run the supported milestone
 
@@ -73,6 +95,20 @@ python -m jev_factorio --backend fle --resume --controller hierarchical \
 ```
 
 Old sessions without the session-ID telemetry are rejected by hierarchical mode.
+A legacy live session can be explicitly identified without resetting its factory:
+
+```bash
+python -m jev_factorio --backend fle --resume --adopt-session \
+  --controller hierarchical --target bootstrap_mining --steps 60 --tick-seconds 2 \
+  --checkpoint runs/adopted-state.json --log-file runs/adopted.jsonl
+```
+
+Stop the previous controller first. Adoption requires a marked world and a valid
+live agent character, refuses to overwrite an existing session ID, and requires
+a new controller checkpoint. It assigns identity only; it does not reconstruct
+old action receipts or claim continuity with an earlier checkpoint. Subsequent
+runs use `--resume --resume-controller`, without `--adopt-session`.
+
 A server reload does not preserve FLE's executable runtime; controller memory is
 not permission to reset or reinterpret a different world. Pin the provider's
 model ID using `--model` when comparing model versions. The logs record requested
@@ -107,6 +143,17 @@ Questions are not free and do not see each other's answers; code combines the
 returned judgments. The ranking formula is a heuristic, not a calibrated chance
 of success. Low confidence, malformed distributions, contradictory Score values,
 or missing evidence cannot authorize a build.
+
+The direct TypeSafe adapter declares a 0.01 answer quantum, based on the rounded
+values observed during native integration. Validation checks whether a normalized
+distribution and its weighted Score can jointly exist inside those rounding
+intervals. This is not arbitrary renormalization: missing labels, out-of-range
+values, impossible sums, and contradictory scores are still rejected, and raw
+answers remain unchanged in the evidence log. Other clients retain strict
+validation unless they explicitly declare the supported quantum. This bounded
+rounding treatment supplements the documented
+[Score weighted-mean contract](https://docs.typesafe.ai/primitives/score);
+it does not weaken confidence or missing-evidence gates.
 
 ### Skill execution and recovery
 

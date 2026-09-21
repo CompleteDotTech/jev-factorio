@@ -92,3 +92,43 @@ def test_resume_refuses_missing_session_without_reset(monkeypatch):
     assert client.closed
     assert len(client.commands) == 2
     assert all(command.startswith("/sc rcon.print(") for command in client.commands)
+
+
+def test_adoption_requires_resume():
+    with pytest.raises(ValueError, match="requires resume"):
+        FleBackend().start(adopt_session=True)
+
+
+@pytest.mark.parametrize("invalid", ["", "unmarked", "missing", "invalid", "identified"])
+def test_adoption_only_identifies_valid_legacy_session(invalid):
+    lua = pytest.importorskip("lupa.lua54").LuaRuntime()
+    lua.execute(
+        "storage = {jev_factorio_session = true}; "
+        "jev_fle_runtime = {agent_characters = {{valid = true}}, coal = 7}; "
+        "rcon = {print = function(value) output = value end}"
+    )
+    original = {
+        "": "",
+        "unmarked": "storage.jev_factorio_session = false",
+        "missing": "jev_fle_runtime.agent_characters = nil",
+        "invalid": "jev_fle_runtime.agent_characters[1].valid = false",
+        "identified": "jev_fle_runtime.jev_session_id = 'existing'",
+    }
+    lua.execute(original[invalid])
+
+    class Connection:
+        def send_command(self, command):
+            lua.execute(command.removeprefix("/sc "))
+            return lua.eval("output")
+
+    if invalid:
+        with pytest.raises(Exception, match="assertion failed"):
+            FleBackend._adopt_session(Connection())
+        assert lua.eval("jev_fle_runtime.jev_session_id") == (
+            "existing" if invalid == "identified" else None
+        )
+    else:
+        identity = FleBackend._adopt_session(Connection())
+        assert len(identity) == 32
+        assert lua.eval("jev_fle_runtime.jev_session_id") == identity
+    assert lua.eval("jev_fle_runtime.coal") == 7

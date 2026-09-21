@@ -41,7 +41,26 @@ class FleBackend:
         self._drill = None
         self._error = ""
 
-    def start(self, resume: bool = False) -> None:
+    @staticmethod
+    def _adopt_session(client) -> str:
+        session_id = uuid4().hex
+        observed = client.send_command(
+            "/sc assert(storage.jev_factorio_session == true); "
+            "assert(jev_fle_runtime and jev_fle_runtime.agent_characters and "
+            "jev_fle_runtime.agent_characters[1] and "
+            "jev_fle_runtime.agent_characters[1].valid); "
+            "assert(jev_fle_runtime.jev_session_id == nil or "
+            "jev_fle_runtime.jev_session_id == ''); "
+            "jev_fle_runtime.jev_session_id = " + json.dumps(session_id) + "; "
+            "rcon.print(jev_fle_runtime.jev_session_id)"
+        )
+        if (observed or "").strip() != session_id:
+            raise RuntimeError("Session adoption failed; refusing to reset or overwrite identity")
+        return session_id
+
+    def start(self, resume: bool = False, adopt_session: bool = False) -> None:
+        if adopt_session and not resume:
+            raise ValueError("Session adoption requires resume; never initializes a world")
         from factorio_rcon import RCONClient
         from fle.env import FactorioInstance
 
@@ -72,6 +91,12 @@ class FleBackend:
                     if (ready or "").strip() != "true":
                         client.close()
                         raise RuntimeError("No live agent session to resume; refusing to reset.")
+                    if adopt_session:
+                        try:
+                            FleBackend._adopt_session(client)
+                        except Exception:
+                            client.close()
+                            raise
                 else:
                     client.send_command("/sc jev_fle_runtime = {jev_session_id="
                                         + json.dumps(uuid4().hex) + "}")
