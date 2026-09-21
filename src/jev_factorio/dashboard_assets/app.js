@@ -230,7 +230,7 @@ function refreshStatus() {
   const heartbeatAge = (performance.now() - receivedAt) / 1000;
   const transportFresh = connected && heartbeatAge <= 3;
   const active = transportFresh && !stale && !ended;
-  if (!active || frozen) for (let i = 2; i <= 7; i++) $(`stage-${i}`).classList.remove("active");
+  for (let stage = 2; stage <= 7; stage++) $(`stage-${stage}`).classList.toggle("active", active && !frozen && v.stage === stage);
   $("connection-led").className = `led ${active ? "live" : "stale"}`;
   set("connection", !connected ? "Reconnecting" : !transportFresh ? "Feed delayed" : ended ? "Invocation ended" : stale ? "No recent telemetry" : "Feed connected");
   $("connection").title = receivedAt ? `Last transport snapshot ${Math.floor(heartbeatAge)}s ago. Game records update independently of this heartbeat.` : "No transport snapshot received.";
@@ -261,6 +261,7 @@ function stopCapture() {
   $("stop-capture").disabled = true;
   $("video-led").className = "led";
   $("camera-devices").hidden = true;
+  $("camera-devices").replaceChildren();
   set("video-status", studio ? "OBS COMPOSITION" : "NO SOURCE");
   set("video-resolution", studio ? "Video is supplied by a separate OBS source" : "Capture permission required");
 }

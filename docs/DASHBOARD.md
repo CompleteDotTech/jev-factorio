@@ -172,8 +172,9 @@ the view freezes its evidence and exports, but the cutoff countdown and age
 of that evidence continue advancing. A transport silent for over three
 seconds is labelled **Feed delayed**; source evidence older than 15 seconds
 is labelled **No recent telemetry**. These are distinct from an ended
-controller invocation. Returning to a browser-cached page reconnects the feed
-without restarting capture or granting media permissions.
+controller invocation. Returning to a browser-cached page reconnects telemetry
+only. Leaving the page releases all capture tracks; the video preview stays
+stopped until the user starts capture again and grants any required permissions.
 
 ## Observer and transport contract
 

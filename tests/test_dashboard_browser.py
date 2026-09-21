@@ -351,18 +351,21 @@ def test_stale_disconnected_and_delayed_feed_indicators(live):
     }""")
     assert status == {"connection": "No recent telemetry", "active": False}
     playwright.expect(page.locator("#connection")).to_have_text("Feed connected")
+    playwright.expect(page.locator("#stage-5.active")).to_have_count(1)
     status = page.evaluate("""() => {
         receivedAt -= 4000; refreshStatus();
         return document.querySelector("#connection").textContent;
     }""")
     assert status == "Feed delayed"
     playwright.expect(page.locator("#connection")).to_have_text("Feed connected")
+    playwright.expect(page.locator("#stage-5.active")).to_have_count(1)
     status = page.evaluate("""() => {
         events.onerror();
         return document.querySelector("#connection").textContent;
     }""")
     assert status == "Reconnecting"
     playwright.expect(page.locator("#connection")).to_have_text("Feed connected")
+    playwright.expect(page.locator("#stage-5.active")).to_have_count(1)
     assert not errors
 
 
@@ -413,6 +416,11 @@ def test_camera_device_switch_and_playback_failure_cleanup(live):
     playwright.expect(page.locator("#camera-devices")).to_have_value("alternate")
     assert page.evaluate("window.priorCamera.readyState") == "ended"
     assert page.evaluate("window.lastConstraints.audio") is False
+    page.locator("#stop-capture").click()
+    assert page.locator("#camera-devices").input_value() == ""
+    page.locator("#camera").click()
+    playwright.expect(page.locator("#camera-devices")).to_be_visible()
+    assert page.evaluate("window.lastConstraints.video") is True
     page.locator("#stop-capture").click()
     page.evaluate("() => { HTMLMediaElement.prototype.play = () => Promise.reject(new DOMException('denied','NotAllowedError')); }")
     page.locator("#capture").click()
