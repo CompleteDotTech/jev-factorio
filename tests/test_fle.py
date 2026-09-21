@@ -163,6 +163,7 @@ def test_observation_admits_raw_resources_only_from_fair_native_targets():
     {"name": "stone", "surface_index": 1, "position": {"x": 0, "y": 0}},
 ])
 def test_native_mine_target_rejects_missing_or_invalid_native_evidence(target):
+    pytest.importorskip("fle.env")
     backend = FleBackend()
     backend._fair = type("Fair", (), {
         "call": lambda self, function, *arguments: target,
