@@ -8,6 +8,9 @@ game agent.
 
 Docs: [ARCHITECTURE](docs/ARCHITECTURE.md) | [BUILD PLAN](docs/BUILD_PLAN.md)
 
+For bounded native runs with error-triggered Codex repair and guarded relaunch,
+see [Autonomous campaign supervision](docs/AUTONOMOUS_SUPERVISION.md).
+
 ## Quick start (offline, no key, no game)
 
 ```bash
