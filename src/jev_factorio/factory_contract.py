@@ -1,0 +1,141 @@
+"""Typed factory commands and observation-only completion predicates."""
+from __future__ import annotations
+
+import math
+
+from .state import GameSnapshot
+
+COMMAND_FIELDS = {
+    "factory_bind": set(),
+    "factory_explore": {"radius"},
+    "factory_gather": {"resource", "quantity"},
+    "factory_craft": {"recipe", "batches"},
+    "factory_place": {"role", "name", "anchor"},
+    "factory_configure": {"role", "recipe"},
+    "factory_insert": {"role", "item", "quantity", "receipt"},
+    "factory_extract": {"role", "item", "quantity", "receipt"},
+    "factory_connect": {"source", "target", "kind", "fluid"},
+    "factory_research": {"technology"},
+    "factory_launch": {"role"},
+    "factory_wait": set(),
+}
+EFFECTS = {
+    "player_bound", "machine", "machine_recipe", "machine_input", "machine_fuel",
+    "machine_output", "connection", "research_started", "researched", "research_progress",
+    "crafting_idle", "rocket_ready", "rocket_parts", "rocket_launched", "produced", "transfer",
+    "explored", "powered",
+}
+
+
+def validate_command(action: str, parameters: dict) -> None:
+    if action not in COMMAND_FIELDS or not isinstance(parameters, dict):
+        raise ValueError("Unknown factory command")
+    if set(parameters) != COMMAND_FIELDS[action]:
+        raise ValueError("Factory command fields do not match its contract")
+    for key, value in parameters.items():
+        if key == "radius":
+            if type(value) is not int or not 1 <= value <= 32:
+                raise ValueError("Exploration radius must be in [1, 32]")
+        elif key in {"quantity", "batches"}:
+            if type(value) is not int or not 1 <= value <= 200:
+                raise ValueError("Factory batch must be an integer in [1, 200]")
+        elif not isinstance(value, str) or not value or len(value) > 128:
+            raise ValueError("Factory identifiers must be bounded strings")
+    if action == "factory_connect" and parameters["kind"] not in {"pipe", "small-electric-pole"}:
+        raise ValueError("Unsupported factory connection type")
+
+
+def connected(factory: dict, source: str, target: str, kind: str, fluid: str) -> bool:
+    entities = factory.get("entities", {})
+    before, after = entities.get(source, {}), entities.get(target, {})
+    if not before or not after:
+        return False
+    if kind == "small-electric-pole":
+        network = before.get("electric_network_id")
+        return bool(network) and network == after.get("electric_network_id")
+
+    def segments(entity):
+        return {port["id"] for port in entity.get("fluid_ports", [])
+                if port.get("id") and port.get("fluid", "") in {"", fluid}}
+
+    return bool(segments(before) & segments(after))
+
+
+def satisfied(effect: str, item: str, threshold: float, parameters: dict, snapshot: GameSnapshot,
+              action: str = "") -> bool:
+    factory = snapshot.factory
+    entities = factory.get("entities", {})
+    machine = entities.get(parameters.get("role", ""), {})
+    if effect == "player_bound":
+        return factory.get("player_bound") is True
+    if effect == "explored":
+        return factory.get("exploration_radius", 0) >= threshold
+    if effect == "machine":
+        return machine.get("name") == parameters["name"]
+    if effect == "machine_recipe":
+        return machine.get("recipe") == parameters["recipe"]
+    if effect == "powered":
+        return machine.get("energy", 0) > 0
+    if effect in {"machine_input", "machine_output", "machine_fuel"}:
+        return machine.get(effect.removeprefix("machine_"), {}).get(item, 0) >= threshold
+    if effect == "connection":
+        return connected(factory, **parameters)
+    if effect == "transfer":
+        receipt = factory.get("receipts", {}).get(parameters["receipt"], {})
+        return (receipt.get("role") == parameters["role"]
+                and action in {"factory_insert", "factory_extract"}
+                and receipt.get("extracting") is (action == "factory_extract")
+                and receipt.get("unit_number") == machine.get("unit_number")
+                and receipt.get("item") == parameters["item"]
+                and receipt.get("quantity") == parameters["quantity"])
+    if effect == "research_started":
+        return factory.get("research") == item or item in (snapshot.researched or [])
+    if effect == "researched":
+        return item in (snapshot.researched or [])
+    if effect == "research_progress":
+        return item in (snapshot.researched or []) or (
+            factory.get("research") == item and factory.get("research_progress", 0) >= threshold
+        )
+    if effect == "crafting_idle":
+        return factory.get("crafting_queue", math.inf) == 0
+    if effect == "rocket_ready":
+        return machine.get("rocket_ready") is True
+    if effect == "rocket_parts":
+        return machine.get("rocket_parts", 0) >= threshold or machine.get("rocket_ready") is True
+    if effect == "rocket_launched":
+        return snapshot.victory is True and snapshot.victory_source == "native:base-game-rocket-launch"
+    if effect == "produced":
+        return factory.get("produced", {}).get(item, 0) >= threshold
+    raise ValueError(f"Unknown factory effect: {effect}")
+
+
+def allowed(action: str, parameters: dict, snapshot: GameSnapshot) -> bool:
+    validate_command(action, parameters)
+    factory = snapshot.factory
+    entities = factory.get("entities", {})
+    machine = entities.get(parameters.get("role", ""), {})
+    if not factory:
+        return False
+    if action == "factory_bind":
+        return factory.get("player_connected") is True
+    if action == "factory_gather":
+        return parameters["resource"] in snapshot.nearby_resources
+    if action == "factory_place":
+        return not machine and snapshot.inventory.get(parameters["name"], 0) >= 1
+    if action == "factory_craft":
+        return (factory.get("player_connected") is True
+                and factory.get("player_bound") is True and factory.get("crafting_queue") == 0)
+    if action in {"factory_insert", "factory_extract", "factory_configure", "factory_launch"}:
+        if not machine:
+            return False
+        if action == "factory_insert":
+            return snapshot.inventory.get(parameters["item"], 0) >= parameters["quantity"]
+        if action == "factory_extract":
+            return machine.get("output", {}).get(parameters["item"], 0) >= parameters["quantity"]
+        if action == "factory_launch":
+            return machine.get("rocket_ready") is True
+    if action == "factory_connect":
+        return parameters["source"] in entities and parameters["target"] in entities
+    if action == "factory_research":
+        return factory.get("research", "") in {"", parameters["technology"]}
+    return True

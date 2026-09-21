@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from .planning.materials import quantities
 from .questions import _candidate_actions
 from .state import GameSnapshot
+from . import factory_contract
 
 ACTIONS = frozenset({"walk_to_coal", "walk_to_iron", "mine_coal", "mine_iron",
                      "place_burner_drill", "fuel_drill", "craft_stone_furnace", "idle"})
@@ -25,10 +26,23 @@ class Step:
     threshold: float = 0
     costs: dict[str, float] | None = None
     timeout_ticks: int = 600
+    parameters: dict | None = None
+    verification: dict | None = None
 
     def __post_init__(self) -> None:
-        if self.action not in ACTIONS or self.effect not in EFFECTS:
+        if (self.action not in ACTIONS | factory_contract.COMMAND_FIELDS.keys()
+                or self.effect not in EFFECTS | factory_contract.EFFECTS):
             raise ValueError("Unknown skill action or verifier")
+        if self.action in factory_contract.COMMAND_FIELDS:
+            factory_contract.validate_command(self.action, self.parameters or {})
+        if self.verification is not None:
+            if (not isinstance(self.verification, dict)
+                    or set(self.verification) - {"role"}
+                    or any(not isinstance(value, str) or not value or len(value) > 128
+                           for value in self.verification.values())
+                    or any(key in (self.parameters or {}) and self.parameters[key] != value
+                           for key, value in self.verification.items())):
+                raise ValueError("Invalid factory verification identity")
         if (isinstance(self.threshold, bool) or not isinstance(self.threshold, (int, float))
                 or not math.isfinite(self.threshold)
                 or self.threshold < 0 or type(self.timeout_ticks) is not int
@@ -37,6 +51,10 @@ class Step:
         quantities(self.costs or {})
 
     def satisfied(self, snapshot: GameSnapshot) -> bool:
+        if self.effect in factory_contract.EFFECTS:
+            return factory_contract.satisfied(self.effect, self.item, self.threshold,
+                                              {**(self.parameters or {}),
+                                               **(self.verification or {})}, snapshot, self.action)
         if self.effect == "near":
             return snapshot.nearby_resources.get(self.item, math.inf) <= 0.5
         if self.effect == "inventory":
@@ -49,6 +67,10 @@ class Step:
         return snapshot.iron_ore_collected >= self.threshold
 
     def allowed(self, snapshot: GameSnapshot) -> bool:
+        if self.action in factory_contract.COMMAND_FIELDS:
+            return (factory_contract.allowed(self.action, self.parameters or {}, snapshot)
+                    and all(snapshot.inventory.get(item, 0) >= count
+                            for item, count in (self.costs or {}).items()))
         if self.action not in _candidate_actions(snapshot):
             return False
         if any(snapshot.inventory.get(k, 0) < v for k, v in (self.costs or {}).items()):
@@ -66,6 +88,7 @@ class Plan:
     goal: str
     description: str
     steps: tuple[Step, ...]
+    materials: dict | None = None
 
     def __post_init__(self) -> None:
         if not self.id or not self.goal or not 1 <= len(self.steps) <= 32:
@@ -77,7 +100,8 @@ class Plan:
     @classmethod
     def from_dict(cls, data: dict) -> Plan:
         return cls(id=data["id"], goal=data["goal"], description=data["description"],
-                   steps=tuple(Step(**step) for step in data["steps"]))
+                   steps=tuple(Step(**step) for step in data["steps"]),
+                   materials=data.get("materials"))
 
     def next_step(self, snapshot: GameSnapshot, start: int = 0) -> int:
         while start < len(self.steps) and self.steps[start].satisfied(snapshot):

@@ -40,3 +40,6 @@ jev-factorio = "jev_factorio.main:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+jev_factorio = ["lua/*.lua"]

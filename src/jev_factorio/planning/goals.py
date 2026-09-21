@@ -19,8 +19,12 @@ GOALS = {
         "bootstrap_mining", "Observe a working iron drill and at least five collected ore",
         ("stockpile_fuel",),
     ),
-    # A terminal objective, NOT a fabricated technology/recipe graph. Further
-    # production skills and version-specific victory telemetry must be supplied.
+    "iron_smelting": Goal("iron_smelting", "Collect ten natively smelted iron plates",
+                         ("bootstrap_mining",)),
+    "steam_power": Goal("steam_power", "Observe a powered lab on a steam electric network",
+                       ("bootstrap_mining",)),
+    "automation_science": Goal("automation_science", "Craft ten automation science packs natively",
+                              ("bootstrap_mining",)),
     "rocket_launch": Goal(
         "rocket_launch", "Verify a native base-game rocket-launch completion event",
         ("bootstrap_mining",),
@@ -65,4 +69,17 @@ def completed(goal: str, snapshot: GameSnapshot) -> bool:
     if goal == "rocket_launch":
         return (snapshot.victory is True
                 and snapshot.victory_source == "native:base-game-rocket-launch")
+    if goal == "iron_smelting":
+        return snapshot.inventory.get("iron-plate", 0) >= 10 and (
+            snapshot.factory.get("produced", {}).get("iron-plate", 0) >= 10
+        )
+    if goal == "automation_science":
+        return snapshot.inventory.get("automation-science-pack", 0) >= 10 and (
+            snapshot.factory.get("produced", {}).get("automation-science-pack", 0) >= 10
+        )
+    if goal == "steam_power":
+        entities = snapshot.factory.get("entities", {})
+        lab, engine = entities.get("utility:lab", {}), entities.get("utility:engine", {})
+        return (lab.get("energy", 0) > 0 and bool(lab.get("electric_network_id"))
+                and lab["electric_network_id"] == engine.get("electric_network_id"))
     raise ValueError(f"No verifier for goal: {goal}")
