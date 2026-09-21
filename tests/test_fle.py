@@ -99,6 +99,79 @@ def test_adoption_requires_resume():
         FleBackend().start(adopt_session=True)
 
 
+def test_observation_admits_raw_resources_only_from_fair_native_targets():
+    fle = pytest.importorskip("fle.env")
+    calls = []
+
+    class Fair:
+        def call(self, function, *arguments):
+            calls.append((function, arguments))
+            if function == "observe":
+                return {}
+            resource, radius = arguments
+            assert function == "next_mine_target" and radius == 128
+            return {
+                "name": resource,
+                "surface_index": 1,
+                "position": {"x": 3 if resource == "coal" else 4, "y": 5},
+            }
+
+    class Tools:
+        namespace = None
+
+        @staticmethod
+        def inspect_inventory(*arguments):
+            return {}
+
+        @staticmethod
+        def get_entities(*arguments):
+            return []
+
+        def nearest(self, resource):
+            raise AssertionError(f"stale FLE lookup used for {resource}")
+
+    backend = FleBackend()
+    backend._fair = Fair()
+    backend._instance = type("Instance", (), {
+        "namespace": Tools(),
+        "rcon_client": type("Rcon", (), {
+            "send_command": lambda self, command: (
+                '{"tick": 17, "session_id": "native-test", "position": [0, 0]}'
+            ),
+        })(),
+    })()
+
+    observed = backend.observe()
+
+    assert calls == [
+        ("observe", ()),
+        ("next_mine_target", ("coal", 128)),
+        ("next_mine_target", ("iron-ore", 128)),
+    ]
+    assert backend._resources == {
+        "coal": fle.Position(x=3, y=5),
+        "iron-ore": fle.Position(x=4, y=5),
+    }
+    assert observed.nearby_resources == {"coal": pytest.approx(34 ** 0.5),
+                                         "iron-ore": pytest.approx(41 ** 0.5)}
+
+
+@pytest.mark.parametrize("target", [
+    {},
+    {"name": "coal", "surface_index": 1, "position": {"x": True, "y": 0}},
+    {"name": "coal", "surface_index": 1, "position": {"x": float("inf"), "y": 0}},
+    {"name": "stone", "surface_index": 1, "position": {"x": 0, "y": 0}},
+])
+def test_native_mine_target_rejects_missing_or_invalid_native_evidence(target):
+    backend = FleBackend()
+    backend._fair = type("Fair", (), {
+        "call": lambda self, function, *arguments: target,
+    })()
+
+    with pytest.raises(RuntimeError, match="fair native coal target"):
+        backend.native_mine_target("coal")
+
+
 @pytest.mark.parametrize("invalid", ["", "unmarked", "missing", "invalid", "identified"])
 def test_adoption_only_identifies_valid_legacy_session(invalid):
     lua = pytest.importorskip("lupa.lua54").LuaRuntime()

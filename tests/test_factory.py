@@ -365,6 +365,45 @@ def test_native_observation_does_not_fall_back_to_stale_fle_wood(monkeypatch):
     assert "wood" not in observed.nearby_resources
 
 
+def test_native_observation_uses_fair_admission_for_copper_and_stone(monkeypatch):
+    fle = pytest.importorskip("fle.env")
+    requested = []
+
+    class Tools:
+        def nearest(self, resource):
+            assert resource in {fle.Resource.Water, fle.Resource.CrudeOil}
+            return fle.Position(x=9, y=7)
+
+    def native_mine_target(resource):
+        requested.append(resource)
+        return {
+            "copper-ore": fle.Position(x=3, y=4),
+            "stone": fle.Position(x=6, y=8),
+        }[resource]
+
+    factory = object.__new__(NativeFactory)
+    factory.catalog = SimpleNamespace(version="2.0.77")
+    factory.backend = SimpleNamespace(
+        _drill=None,
+        _resources={},
+        _tools=Tools(),
+        _fair=SimpleNamespace(call=lambda *arguments: {}),
+        native_mine_target=native_mine_target,
+    )
+    monkeypatch.setattr(factory, "command", lambda script: (
+        '{"tick": 17, "entities": {}, "researched": [], '
+        '"rockets_launched": 0, "rocket_baseline": 0}'
+    ))
+
+    observed = factory.observe(snapshot(world_kind="fle", player_position=(0, 0)))
+
+    assert requested == ["copper-ore", "stone"]
+    assert observed.nearby_resources["copper-ore"] == 5
+    assert observed.nearby_resources["stone"] == 10
+    assert factory.backend._resources["copper-ore"] == fle.Position(x=3, y=4)
+    assert factory.backend._resources["stone"] == fle.Position(x=6, y=8)
+
+
 @pytest.mark.parametrize("invalid_site", [
     {"name": None}, {"name": ""}, {"name": " "},
     {"surface_index": None}, {"surface_index": 0}, {"surface_index": -1},

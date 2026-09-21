@@ -190,6 +190,32 @@ def test_next_mining_target_enforces_fair_actor_invariants(fair_runtime):
     assert fair_runtime.eval("quantities.coal") == 0
 
 
+def test_raw_target_skips_ore_obscured_by_another_selection_box(fair_runtime):
+    fair_runtime.execute("""
+        local hidden = {
+            valid = true, minable = true, name = "iron-ore",
+            surface = {index = 1}, position = {x = 1, y = 0}
+        }
+        local visible = {
+            valid = true, minable = true, name = "iron-ore",
+            surface = {index = 1}, position = {x = 2, y = 0}
+        }
+        surface.find_entities_filtered = function(filter)
+            assert(filter.name == "iron-ore")
+            assert(filter.radius == 128)
+            return {hidden, visible}
+        end
+        player.update_selected_entity = function(position)
+            player.selected = position == visible.position and visible or nil
+        end
+        local result = storage.fair.next_mine_target("iron-ore", 128)
+        assert(result.position.x == 2 and result.name == "iron-ore")
+        assert(requested_path == nil and quantities.coal == 0)
+        assert(not player.walking_state or not player.walking_state.walking)
+        assert(not player.mining_state or not player.mining_state.mining)
+    """)
+
+
 def test_wood_target_skips_trunks_obscured_by_other_selection_boxes(fair_runtime):
     fair_runtime.execute("""
         local hidden = {
