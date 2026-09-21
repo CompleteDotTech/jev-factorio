@@ -89,6 +89,9 @@ The [hierarchical controller guide](docs/HIERARCHICAL_CONTROLLER.md) describes
 persistent goals, batched JEV candidate evaluation, verified skill plans,
 checkpoint recovery, and deterministic comparison runs.
 
+The [performance investigation prompt](docs/PERFORMANCE_INVESTIGATION_PROMPT.md)
+defines a persistent, evidence-backed optimization study with an explicit PR approval gate.
+
 ```bash
 python -m jev_factorio --controller hierarchical --backend mock --mock-model \
   --target bootstrap_mining --steps 40 --tick-seconds 0 \
