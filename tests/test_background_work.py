@@ -1,0 +1,326 @@
+"""Integration of the actual controller with an explicitly synthetic backend."""
+from copy import deepcopy
+from pathlib import Path
+
+import pytest
+
+from jev_factorio.background import BackgroundMemory, BackgroundWorkLoop
+from jev_factorio.craft_jobs import CraftJob
+from jev_factorio.memory import CampaignMemory
+from jev_factorio.planning.background_work import independent_candidates, research_demands
+from jev_factorio.skills import Plan, Step
+from test_factory import catalog, machine, recipe, snapshot
+
+
+def science_catalog():
+    result = catalog()
+    result.recipes["automation-science-pack"] = recipe("automation-science-pack", {"iron-plate": 1})
+    result.recipes["logistic-science-pack"] = recipe("logistic-science-pack", {"copper-ore": 1})
+    result.technologies["study"] = {
+        "enabled": True, "prerequisites": [], "effects": [], "count": 100, "energy_ticks": 60,
+        "ingredients": [{"name": "automation-science-pack", "amount": 1},
+                        {"name": "logistic-science-pack", "amount": 1}],
+    }
+    return result
+
+
+class ReceiptBackend:
+    craft_jobs_supported = True
+
+    def __init__(self):
+        self.state = snapshot(inventory={"iron-plate": 10}, nearby_resources={"iron-ore": 0, "copper-ore": 0})
+        self.state.factory.update(craft_jobs_protocol=1, craft_job_actor={
+            "session_id": self.state.session_id, "player_index": 1, "unit_number": 9,
+            "surface_index": 1, "force_index": 1,
+        })
+        self.calls = []
+        self.observations = 0
+        self.fail_observation = None
+        self.lose_ack = False
+        self.before_observation = None
+
+    def enable_factory(self):
+        return science_catalog()
+
+    def observe(self):
+        self.observations += 1
+        if self.before_observation:
+            self.before_observation(self)
+        if self.observations == self.fail_observation:
+            raise OSError("synthetic observation loss")
+        return deepcopy(self.state)
+
+    def execute(self, action, parameters):
+        self.calls.append((action, deepcopy(parameters)))
+        if action == "factory_craft_job":
+            self.state.inventory["iron-plate"] -= parameters["batches"]
+            self.state.factory.update(crafting_queue=1, craft_job={
+                **self.state.factory["craft_job_actor"], "id": parameters["receipt"],
+                "recipe": parameters["recipe"], "requested": parameters["batches"],
+                "accepted": parameters["batches"], "finished": 0,
+                "started_tick": self.state.tick, "last_progress_tick": self.state.tick,
+                "inputs": {"iron-plate": parameters["batches"]},
+                "outputs": {"automation-science-pack": parameters["batches"]},
+                "baseline": {"automation-science-pack": 0}, "status": "running",
+                "queue_valid": True, "paid": True,
+            })
+            if self.lose_ack:
+                raise TimeoutError("synthetic lost acknowledgement")
+        elif action == "factory_gather":
+            item = parameters["resource"]
+            self.state.inventory[item] = self.state.inventory.get(item, 0) + parameters["quantity"]
+        elif action != "factory_wait":
+            raise AssertionError(action)
+        return "synthetic return"
+
+    def act(self, action):
+        assert action == "idle"
+        self.state.tick += 1
+
+    def complete(self):
+        self.state.tick += 100
+        self.state.inventory["automation-science-pack"] = 10
+        self.state.factory["crafting_queue"] = 0
+        self.state.factory["craft_job"].update(status="completed", finished=10,
+            last_progress_tick=self.state.tick, completed_tick=self.state.tick)
+
+
+class ScenarioLoop(BackgroundWorkLoop):
+    """Deterministic test candidates; the real dispatcher/receipts stay intact."""
+    def _compile_candidates(self, current):
+        if self.memory.background_job:
+            have = current.inventory.get("iron-ore", 0)
+            return [Plan("gather-iron", self.memory.active_goal, "Independent ore", (
+                Step("factory_gather", "inventory", "iron-ore", have + 5,
+                     parameters={"resource": "iron-ore", "quantity": 5}),
+            ))], ""
+        plan = Plan("craft-science", self.memory.active_goal, "Craft ten science", (
+            Step("factory_craft", "inventory", "automation-science-pack", 10,
+                 costs={"iron-plate": 10}, timeout_ticks=1800,
+                 parameters={"recipe": "automation-science-pack", "batches": 10}),
+        ))
+        return [self._tracked_plan(plan, current)], ""
+
+
+def controller(backend, tmp_path, *, resume=False):
+    loop = ScenarioLoop(backend, policy="deterministic", factory_scheduling="ready-work",
+                        target="automation_science", checkpoint=str(tmp_path / "state.json"),
+                        resume_controller=resume, tick_seconds=0)
+    if not resume:
+        loop.memory = BackgroundMemory(backend.state.session_id, loop.target,
+            active_goal=loop.target, completed_goals={goal: 0 for goal in loop.order[:-1]}, last_tick=10)
+    return loop
+
+
+def test_craft_then_independent_gather_then_verified_completion(tmp_path):
+    backend = ReceiptBackend()
+    loop = controller(backend, tmp_path)
+    first = loop.step()
+    assert first["verified"] is False and first["background_job"]
+    assert loop.memory.pending is None and loop.memory.reservations == {}
+    assert loop.memory.active_plan is None
+    assert backend.calls[0][0] == "factory_craft_job"
+    assert loop.step()["action"] == "factory_gather"
+    assert loop.memory.background_job and backend.state.inventory["iron-ore"] == 5
+    backend.complete()
+    record = loop.step()
+    assert loop.memory.background_job is None and record["status"] == "completed"
+    assert len(backend.calls) == 2
+    assert any(event["kind"] == "background_job_completed" for event in loop.memory.history)
+
+
+def test_checkpoint_resume_never_requeues_a_background_craft(tmp_path):
+    backend = ReceiptBackend()
+    controller(backend, tmp_path).step()
+    restored = controller(backend, tmp_path, resume=True)
+    restored.step()
+    assert [action for action, _ in backend.calls] == ["factory_craft_job", "factory_gather"]
+    assert restored.memory.background_job
+    with pytest.raises(ValueError):
+        CampaignMemory.load(tmp_path / "state.json", backend.state.session_id, restored.target)
+
+
+def test_lost_post_dispatch_observation_recovers_returned_receipt_without_replay(tmp_path):
+    backend = ReceiptBackend()
+    backend.fail_observation = 3
+    loop = controller(backend, tmp_path)
+    with pytest.raises(OSError):
+        loop.step()
+    assert loop.memory.pending["dispatch"] == "returned"
+    restored = controller(backend, tmp_path, resume=True)
+    result = restored.step()
+    assert result["verified"] is False and restored.memory.background_job
+    assert len(backend.calls) == 1
+
+
+@pytest.mark.parametrize("dispatch", ["prepared", "ambiguous"])
+def test_uncertain_dispatch_cannot_free_actor_even_with_running_native_receipt(tmp_path, dispatch):
+    backend = ReceiptBackend()
+    backend.lose_ack = True
+    loop = controller(backend, tmp_path)
+    loop.step()
+    loop.memory.pending["dispatch"] = dispatch
+    loop._save()
+    resumed = controller(backend, tmp_path, resume=True)
+    resumed.step()
+    assert resumed.memory.background_job is None and resumed.memory.pending
+    assert len(backend.calls) == 1
+    backend.complete()
+    resumed.step()
+    assert resumed.memory.pending is None and len(backend.calls) == 1
+
+
+def test_inventory_alone_and_success_text_cannot_verify_tracked_craft(tmp_path):
+    backend = ReceiptBackend()
+    backend.lose_ack = True
+    loop = controller(backend, tmp_path)
+    loop.step()
+    backend.state.inventory["automation-science-pack"] = 100
+    loop.step()
+    assert loop.memory.pending and loop.memory.background_job is None
+    assert len(backend.calls) == 1
+
+
+def test_cancel_on_fresh_observation_blocks_selected_independent_dispatch(tmp_path):
+    backend = ReceiptBackend()
+    loop = controller(backend, tmp_path)
+    loop.step()
+    trigger = backend.observations + 2
+    def cancel_on_fresh(value):
+        if value.observations == trigger:
+            value.state.factory["craft_job"]["status"] = "invalid"
+    backend.before_observation = cancel_on_fresh
+    result = loop.step()
+    assert result["status"] == "uncertain" and loop.memory.background_job
+    assert len(backend.calls) == 1
+
+
+def test_uncertain_background_does_not_erase_unrelated_pending_mutation(tmp_path):
+    backend = ReceiptBackend()
+    loop = controller(backend, tmp_path)
+    loop.step()
+    plan = Plan("pending-gather", loop.target, "Possible partial action", (
+        Step("factory_gather", "inventory", "iron-ore", 5,
+             parameters={"resource": "iron-ore", "quantity": 5}),))
+    loop.memory.active_plan = plan.to_dict()
+    loop.memory.pending = {"action": "factory_gather", "started_tick": 10, "polls": 1, "dispatch": "ambiguous"}
+    backend.state.inventory["iron-ore"] = 5
+    backend.state.factory["craft_job"]["status"] = "invalid"
+    pending = deepcopy(loop.memory.pending)
+    result = loop.step()
+    assert result["status"] == "uncertain" and loop.memory.pending == pending
+    assert len(backend.calls) == 1
+
+
+def test_checkpoint_failure_poison_stops_further_calls(tmp_path, monkeypatch):
+    backend = ReceiptBackend()
+    loop = controller(backend, tmp_path)
+    loop.step()
+    def fail(*args):
+        raise OSError("synthetic fsync failure")
+    monkeypatch.setattr(BackgroundMemory, "save", fail)
+    with pytest.raises(OSError):
+        loop.step()
+    count = backend.observations
+    with pytest.raises(RuntimeError, match="persistence"):
+        loop.step()
+    assert backend.observations == count and len(backend.calls) == 1
+
+
+def test_legacy_checkpoint_migration_is_read_only(tmp_path):
+    path = tmp_path / "legacy.json"
+    memory = CampaignMemory("test-factory", "automation_science")
+    memory.save(path)
+    before = path.read_bytes()
+    restored = BackgroundMemory.load(path, "test-factory", "automation_science")
+    assert restored.background_job is None and path.read_bytes() == before
+
+
+def test_output_locks_check_both_costs_and_transferred_items(tmp_path):
+    backend = ReceiptBackend()
+    loop = controller(backend, tmp_path)
+    loop.step()
+    backend.state.factory["entities"]["utility:lab"] = machine("lab")
+    backend.state.inventory["automation-science-pack"] = 1
+    transfer = Step("factory_insert", "transfer", costs={"automation-science-pack": 1},
+                    parameters={"role": "utility:lab", "item": "automation-science-pack",
+                                "quantity": 1, "receipt": "deliver"})
+    assert transfer.allowed(backend.state)
+    assert not loop._step_allowed(transfer, backend.state)
+
+
+def test_research_prefetch_starts_before_lab_empty_and_caps_remaining_demand():
+    current = snapshot()
+    current.factory.update(research="study", research_progress=0.1)
+    current.factory["entities"]["utility:lab"] = machine("lab", input={"automation-science-pack": 4,
+                                                                                   "logistic-science-pack": 20})
+    assert research_demands(current, science_catalog()) == [("automation-science-pack", 16)]
+    current.factory["research_progress"] = 0.97
+    assert research_demands(current, science_catalog()) == []
+    current.factory["entities"]["utility:lab"]["input"]["automation-science-pack"] = 1
+    demands = research_demands(current, science_catalog())
+    # Floating-point progress can conservatively add one unit; never a full buffer.
+    assert 1 <= demands[0][1] <= 3
+
+
+def test_independent_research_ingredient_is_gathered_while_pack_is_locked(tmp_path):
+    backend = ReceiptBackend()
+    loop = controller(backend, tmp_path)
+    loop.step()
+    current = backend.state
+    current.factory.update(research="study", research_progress=0.0)
+    current.factory["entities"]["utility:lab"] = machine("lab", input={"automation-science-pack": 0,
+                                                                                    "logistic-science-pack": 0})
+    before = deepcopy(current)
+    plans = independent_candidates("rocket_launch", current, science_catalog(), loop._job())
+    assert any(plan.steps[0].action == "factory_gather" and plan.steps[0].item == "copper-ore" for plan in plans)
+    assert all(loop._job().permits(plan.steps[0]) and plan.steps[0].allowed(current) for plan in plans)
+    assert current == before and len(plans) <= 8
+
+
+def test_atomic_inventory_replaces_stale_fle_inventory_without_extra_call():
+    from types import SimpleNamespace
+    from jev_factorio.backends.craft_jobs import CraftJobFactory
+
+    current = snapshot(inventory={"automation-science-pack": 0})
+    current.factory["craft_job_inventory"] = {"tick": current.tick, "items": {"automation-science-pack": 1}}
+    calls = []
+    def observe(value):
+        calls.append("observe")
+        return value
+    adapter = object.__new__(CraftJobFactory)
+    adapter.native = SimpleNamespace(observe=observe)
+    assert adapter.observe(current).inventory == {"automation-science-pack": 1}
+    assert calls == ["observe"] and "craft_job_inventory" not in current.factory
+    with pytest.raises(ValueError, match="atomic"):
+        adapter.observe(current)
+
+
+def test_background_checkpoint_accepts_independent_wait_with_none_parameters(tmp_path):
+    backend = ReceiptBackend()
+    loop = controller(backend, tmp_path)
+    loop.step()
+    loop.memory.active_plan = Plan("wait", loop.target, "wait", (
+        Step("factory_wait", "crafting_idle"),)).to_dict()
+    loop._save()
+    restored = BackgroundMemory.load(tmp_path / "state.json", backend.state.session_id, loop.target)
+    assert restored.background_job and restored.active_plan["steps"][0]["parameters"] is None
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--background-work"],
+    ["--background-work", "--controller", "hierarchical", "--factory-scheduling", "ready-work"],
+    ["--background-work", "--controller", "hierarchical", "--backend", "fle"],
+    ["--background-work", "--controller", "hierarchical", "--backend", "fle",
+     "--factory-scheduling", "ready-work", "--target", "bootstrap_mining"],
+])
+def test_cli_rejects_unsupported_background_mode_before_backend_start(monkeypatch, arguments):
+    import sys
+    from jev_factorio import main
+
+    monkeypatch.setattr(sys, "argv", ["jev-factorio", *arguments])
+    monkeypatch.setattr(main, "load_dotenv", lambda **kwargs: None)
+    monkeypatch.setattr(main, "make_backend", lambda *args, **kwargs: pytest.fail("backend started"))
+    with pytest.raises(SystemExit) as error:
+        main.cli()
+    assert error.value.code == 2
