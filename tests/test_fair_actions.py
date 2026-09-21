@@ -226,7 +226,28 @@ def test_build_site_search_checks_direction_without_moving_or_granting_items(fai
 
 
 def test_place_entity_uses_direction_selected_by_native_buildability(monkeypatch):
-    from fle.env import Direction, Position, Prototype
+    import sys
+    import types
+    from dataclasses import dataclass
+    from types import SimpleNamespace
+
+    @dataclass
+    class Position:
+        x: float
+        y: float
+
+    Direction = SimpleNamespace(
+        UP=SimpleNamespace(value=0), RIGHT=SimpleNamespace(value=4)
+    )
+    Prototype = SimpleNamespace(
+        OffshorePump=SimpleNamespace(value=("offshore-pump", object))
+    )
+    fle = types.ModuleType("fle")
+    fle_env = types.ModuleType("fle.env")
+    fle_env.Direction, fle_env.Position, fle_env.Prototype = Direction, Position, Prototype
+    monkeypatch.setitem(sys.modules, "fle", fle)
+    monkeypatch.setitem(sys.modules, "fle.env", fle_env)
+
     from jev_factorio.backends.fair_actions import FairActions
 
     fair = object.__new__(FairActions)
