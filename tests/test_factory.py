@@ -788,10 +788,42 @@ def test_ambiguous_connection_reconciliation_fails_closed(change):
     elif change == "missing_role":
         state.factory["entities"].pop("utility:water")
     elif change == "missing_crafting_queue":
+        state.factory["force_entity_counts"]["pipe"] = 9
         state.factory.pop("crafting_queue")
     elif change == "craft_in_flight":
+        state.factory["force_entity_counts"]["pipe"] = 9
         state.factory["crafting_queue"] = 1
     assert not controller._absent_ambiguous_connection(plan, plan.steps[0], state)
+
+
+def test_ambiguous_first_connection_allows_retained_surplus_stock():
+    plan = Plan(
+        id="factory:factory_connect:", goal="rocket_launch", description="connect",
+        steps=[Step(
+            action="factory_connect", effect="connection", costs={"pipe": 12},
+            parameters={
+                "source": "utility:water", "target": "utility:boiler",
+                "kind": "pipe", "fluid": "water",
+            },
+        )],
+    )
+    state = snapshot(inventory={"pipe": 15})
+    state.factory["entities"] = {
+        "utility:water": machine("offshore-pump"),
+        "utility:boiler": machine("boiler"),
+    }
+    state.factory["force_entity_counts"] = {"pipe": 0}
+    controller = object.__new__(HierarchicalLoop)
+    controller.memory = CampaignMemory(
+        session_id="test-factory", target="rocket_launch", active_goal="rocket_launch",
+        active_plan=plan.to_dict(), pending={
+            "started_tick": 10, "polls": 2,
+            "action": "factory_connect", "dispatch": "ambiguous",
+        },
+        reservations={plan.id: {"pipe": 12}}, last_tick=10, status="uncertain",
+    )
+
+    assert controller._absent_ambiguous_connection(plan, plan.steps[0], state)
 
 
 def test_ambiguous_connection_ignores_connectors_from_verified_prior_plan():

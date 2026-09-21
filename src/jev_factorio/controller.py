@@ -185,20 +185,25 @@ class HierarchicalLoop(AgentLoop):
         counts = snapshot.factory.get("force_entity_counts")
         costs = step.costs or {}
         reserved = self.memory.reservations.get(plan.id)
+        count = counts.get(kind, 0) if isinstance(counts, dict) else None
+        retained = all(snapshot.inventory.get(item, 0) >= quantity
+                       for item, quantity in costs.items())
+        exactly_retained = all(snapshot.inventory.get(item, 0) == quantity
+                               for item, quantity in costs.items())
+        no_craft = (type(snapshot.factory.get("crafting_queue")) is int
+                    and snapshot.factory["crafting_queue"] == 0)
         return bool(
             source in entities and target in entities and kind in {"pipe", "small-electric-pole"}
-            # Existing connectors from earlier verified plans are unrelated to
-            # this write-ahead dispatch.  Fair placement debits each connector
-            # before returning, so exact retention of the sole reserved material
-            # proves this attempt placed none.  Require complete native count
-            # telemetry and no in-flight hand craft so a gain cannot mask a debit.
+            # A native zero count proves a first dispatch placed nothing even
+            # when the player has surplus stock.  With connectors from earlier
+            # verified plans, fair placement debits each new connector, so exact
+            # retention of the sole reserved material proves this attempt placed
+            # none; no in-flight hand craft may mask that debit.
             and isinstance(counts, dict)
-            and type(counts.get(kind, 0)) is int and counts.get(kind, 0) >= 0
+            and type(count) is int and count >= 0
             and set(costs) == {kind} and reserved == costs
-            and type(snapshot.factory.get("crafting_queue")) is int
-            and snapshot.factory["crafting_queue"] == 0
-            and all(snapshot.inventory.get(item, 0) == quantity
-                    for item, quantity in costs.items())
+            and ((count == 0 and retained)
+                 or (count > 0 and exactly_retained and no_craft))
         )
 
     def _verify_pending(self, snapshot: GameSnapshot) -> dict:
