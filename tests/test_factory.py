@@ -647,9 +647,13 @@ def test_opt_in_hybrid_labels_fallback_without_weakening_preconditions(tmp_path)
     assert record["verified"]
 
 
-def test_model_context_omits_receipt_bodies_without_losing_audit_evidence(tmp_path):
+def test_model_context_omits_raw_audit_bodies_without_losing_evidence(tmp_path):
     backend = FactorySimulation()
     backend.state.factory["receipts"] = {"prior": {"quantity": 5}}
+    backend.state.factory["connectors"] = {"pipe": [
+        {"unit_number": index, "position": {"x": index + 0.5, "y": 0.5}, "fluid": "water"}
+        for index in range(512)
+    ]}
     controller = HierarchicalLoop(
         backend, policy="hybrid", jev=MockJevClient(), target="iron_smelting",
         checkpoint=str(tmp_path / "checkpoint.json"), tick_seconds=0,
@@ -657,8 +661,10 @@ def test_model_context_omits_receipt_bodies_without_losing_audit_evidence(tmp_pa
     record = controller.step()
     model_factory = record["decision"]["state"]["facts"]["factory"]
     assert "receipts" not in model_factory
+    assert "connectors" not in model_factory
     assert model_factory["native_transfer_receipt_count"] == 1
     assert record["state"]["factory"]["receipts"] == {"prior": {"quantity": 5}}
+    assert len(record["state"]["factory"]["connectors"]["pipe"]) == 512
     assert backend.state.factory["receipts"] == {"prior": {"quantity": 5}}
 
 
@@ -760,7 +766,7 @@ def test_ambiguous_placement_stays_pending_without_absence_proof(
 @pytest.mark.parametrize("change", [
     "missing_counts", "spent_material", "changed_reservation", "missing_role",
     "missing_connectors", "incomplete_connectors", "same_fluid_connector",
-    "empty_connector", "dry_source",
+    "empty_connector",
 ])
 def test_ambiguous_connection_reconciliation_fails_closed(change):
     plan = Plan(
@@ -807,17 +813,15 @@ def test_ambiguous_connection_reconciliation_fails_closed(change):
             for index in range(1, 9)
         ]}
         state.factory["entities"]["utility:water"]["fluids"] = {"water": 100}
-    elif change in {"same_fluid_connector", "empty_connector", "dry_source"}:
+    elif change in {"same_fluid_connector", "empty_connector"}:
         state.factory["force_entity_counts"]["pipe"] = 1
         connector_fluid = {
-            "same_fluid_connector": "water", "empty_connector": "", "dry_source": "steam",
+            "same_fluid_connector": "water", "empty_connector": "",
         }[change]
         state.factory["connectors"] = {"pipe": [{
             "unit_number": 1, "position": {"x": 0.5, "y": 0.5},
             "fluid": connector_fluid,
         }]}
-        if change != "dry_source":
-            state.factory["entities"]["utility:water"]["fluids"] = {"water": 100}
     assert not controller._absent_ambiguous_connection(plan, plan.steps[0], state)
 
 
@@ -864,7 +868,7 @@ def test_ambiguous_connection_ignores_connectors_from_verified_prior_plan():
     )
     state = snapshot(inventory={"pipe": 41})
     state.factory["entities"] = {
-        "utility:boiler": machine("boiler", fluids={"steam": 200}),
+        "utility:boiler": machine("boiler"),
         "utility:engine": machine("steam-engine"),
     }
     state.factory["force_entity_counts"] = {"pipe": 9}

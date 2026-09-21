@@ -203,12 +203,9 @@ class HierarchicalLoop(AgentLoop):
             )
         )
         fluid = parameters.get("fluid")
-        source_fluids = entities.get(source, {}).get("fluids", {})
-        source_amount = source_fluids.get(fluid, 0) if isinstance(source_fluids, dict) else None
         other_fluid_connectors = bool(
             kind == "pipe" and count and complete_connectors
             and isinstance(fluid, str) and fluid
-            and type(source_amount) in {int, float} and source_amount > 0
             and all(
                 isinstance(connector.get("fluid"), str)
                 and connector["fluid"] not in {"", fluid}
@@ -220,8 +217,8 @@ class HierarchicalLoop(AgentLoop):
             # A native zero count proves a first dispatch placed nothing.  When
             # earlier pipes exist, complete per-entity telemetry may instead
             # prove that every pipe carries another fluid.  Fair construction
-            # starts at the fluid-bearing source, so a partial intended route
-            # would expose either the requested fluid or an empty new pipe.
+            # starts at the source endpoint, so a partial intended route would
+            # expose either the requested fluid or an empty new pipe.
             and isinstance(counts, dict)
             and type(count) is int and count >= 0
             and set(costs) == {kind} and reserved == costs
@@ -313,6 +310,7 @@ class HierarchicalLoop(AgentLoop):
                 facts = snapshot.for_jev()
                 if facts["factory"]:
                     receipts = facts["factory"].pop("receipts", {})
+                    facts["factory"].pop("connectors", None)
                     facts["factory"]["native_transfer_receipt_count"] = len(receipts)
                 state = {"facts": facts, "active_goal": asdict(GOALS[self.memory.active_goal]),
                          "history": self.memory.history[-8:]}
