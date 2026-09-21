@@ -265,7 +265,7 @@ footer span:last-child{display:none}
 }
 
 @media(min-width:1500px){
-body.studio:not(.broadcast){height:100vh;overflow:hidden;display:flex;flex-direction:column}
+body.studio:not(.broadcast){height:100vh;overflow:hidden;display:flex;flex-direction:column;background:transparent}
 body.studio:not(.broadcast) .topbar{height:48px;min-height:48px;padding:5px 12px;gap:24px}
 body.studio:not(.broadcast) .brand-mark{font-size:30px}
 body.studio:not(.broadcast) .brand-caption small{margin-top:2px}
@@ -283,11 +283,11 @@ body.studio:not(.broadcast) .goal-node{padding-block:6px}
 body.studio:not(.broadcast) .observations div{padding:6px 0}
 body.studio:not(.broadcast) .boundary-note{margin-top:14px;padding-top:10px;font-size:9px}
 body.studio:not(.broadcast) .center-column{grid-column:2;grid-row:1/3;gap:8px;min-height:0}
-body.studio:not(.broadcast) .game-panel{flex:none}
-body.studio:not(.broadcast) .preview-heading{height:28px;padding:4px 10px}
-body.studio:not(.broadcast) .game-stage{min-height:0;aspect-ratio:16/9}
+body.studio:not(.broadcast) .game-panel{flex:none;background:transparent}
+body.studio:not(.broadcast) .preview-heading{height:28px;padding:4px 10px;background:var(--panel)}
+body.studio:not(.broadcast) .game-stage{min-height:0;aspect-ratio:16/9;background:transparent}
 body.studio:not(.broadcast) .capture-placeholder,body.studio:not(.broadcast) .capture-toolbar,body.studio:not(.broadcast) .video-bottom,body.studio:not(.broadcast) .game-overlay,body.studio:not(.broadcast) #fullscreen{display:none}
-body.studio:not(.broadcast) .inventory{padding:4px;min-height:40px}
+body.studio:not(.broadcast) .inventory{padding:4px;min-height:40px;background:var(--panel)}
 body.studio:not(.broadcast) .inventory>div{padding:0 8px}
 body.studio:not(.broadcast) .inventory strong{font-size:14px;margin-top:1px}
 body.studio:not(.broadcast) .candidates-panel{flex:1;min-height:0;display:flex;flex-direction:column}
