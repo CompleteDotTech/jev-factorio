@@ -30,4 +30,7 @@ jobs:
           python -m jev_factorio --controller hierarchical --backend mock
           --mock-model --target bootstrap_mining --steps 40 --tick-seconds 0
           --checkpoint /tmp/campaign.json --log-file /tmp/campaign.jsonl
+          --run-dir /tmp/research-evidence
       - run: python -m jev_factorio.evaluation /tmp/campaign.jsonl
+      - name: Verify complete research evidence
+        run: python -m jev_factorio.research_log /tmp/research-evidence
