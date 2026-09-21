@@ -66,3 +66,29 @@ def test_fle_refuses_to_reset_an_unmarked_world(monkeypatch):
     assert connections[0].commands == [
         "/sc rcon.print(storage.jev_factorio_session == true)"
     ]
+
+
+def test_resume_refuses_missing_session_without_reset(monkeypatch):
+    pytest.importorskip("fle.env")
+    import factorio_rcon
+
+    class MissingSession:
+        def __init__(self, *args, **kwargs):
+            self.commands = []
+            self.closed = False
+
+        def send_command(self, command):
+            self.commands.append(command)
+            return "true" if len(self.commands) == 1 else "false"
+
+        def close(self):
+            self.closed = True
+
+    client = MissingSession()
+    monkeypatch.setenv("FACTORIO_RCON_PASSWORD", "test-only-password")
+    monkeypatch.setattr(factorio_rcon, "RCONClient", lambda *args, **kwargs: client)
+    with pytest.raises(RuntimeError, match="No live agent session"):
+        FleBackend().start(resume=True)
+    assert client.closed
+    assert len(client.commands) == 2
+    assert all(command.startswith("/sc rcon.print(") for command in client.commands)

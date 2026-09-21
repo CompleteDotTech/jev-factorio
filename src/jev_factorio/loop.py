@@ -17,6 +17,8 @@ import json
 import time
 from pathlib import Path
 
+import requests
+
 from .jev_client import make_client
 from .questions import build_questions
 from .state import GameSnapshot
@@ -96,9 +98,19 @@ class AgentLoop:
         while steps is None or completed < steps:
             if deadline is not None and time.monotonic() >= deadline:
                 break
-            self.step()
-            completed += 1
             delay = self.tick_seconds
+            try:
+                self.step()
+                completed += 1
+            except requests.RequestException as error:
+                status = error.response.status_code if error.response is not None else None
+                if deadline is None or (
+                    status is not None and status != 429 and status < 500
+                ):
+                    raise
+                print(f"Transient API failure ({status or type(error).__name__}); retrying.",
+                      flush=True)
+                delay = max(30, delay)
             if deadline is not None:
                 delay = min(delay, max(0, deadline - time.monotonic()))
             time.sleep(delay)

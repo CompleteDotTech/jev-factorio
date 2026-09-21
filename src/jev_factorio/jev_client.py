@@ -30,9 +30,6 @@ class JevClient:
             json={"state": state, "model": self.model, "questions": questions},
             timeout=10,
         )
-        if resp.status_code == 429 or resp.status_code == 529:
-            # SDKs retry with backoff automatically; raw path should too.
-            raise RuntimeError(f"Jev busy ({resp.status_code}); back off and retry")
         resp.raise_for_status()
         body = resp.json()
         self.last_usage = body.get("usage")
