@@ -82,3 +82,20 @@ To continue a live agent session for 12 hours instead of a fixed number of steps
 starting decisions at its monotonic deadline; an in-flight decision may finish
 afterward. It makes ongoing API calls and remains limited to the bootstrap
 actions above, not full-game progression.
+
+## Author
+
+Built by **Timothy Wayne Gregg** (CompleteTech LLC, Cincinnati, OH).
+
+- GitHub: <https://github.com/CompleteDotTech>
+- Website: <https://www.complete.tech>
+- Email: timothy.gregg@complete.tech
+
+## License
+
+MIT - see [LICENSE](LICENSE). Copyright 2026 Timothy Wayne Gregg (CompleteTech LLC).
+
+This project derives from `Adibrill1/jev-factorio`, which publishes no license
+file. The MIT grant here covers CompleteTech's own additions and modifications;
+confirm the upstream terms with that project's author before reusing the
+inherited skeleton elsewhere.
