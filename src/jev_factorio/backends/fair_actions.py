@@ -82,19 +82,20 @@ class FairActions:
             raise ValueError("Mining quantity must be positive")
         gained = 0
         for attempt in range(quantity):
-            target = json.loads(self.command(
-                "local player = storage.fair.actor(); local center = helpers.json_to_table("
-                + json.dumps(json.dumps(self.position(position))) + "); "
-                "local filter = {position=center, radius=32}; "
-                + ("filter.type='tree'; " if resource == "wood" else
-                   "filter.name=" + json.dumps(resource) + "; ")
-                + "local entities = player.surface.find_entities_filtered(filter); "
-                "table.sort(entities, function(left, right) return "
-                "(left.position.x-player.position.x)^2+(left.position.y-player.position.y)^2 < "
-                "(right.position.x-player.position.x)^2+(right.position.y-player.position.y)^2 end); "
-                "assert(entities[1], 'No nearby mining target'); "
-                "rcon.print(helpers.table_to_json(entities[1].position))"
-            ))
+            if gained == 0:
+                # Honor the resource coordinate from the observation that
+                # authorized this action.  It is the target to which the
+                # controller committed, rather than merely a same-name node
+                # near the player.
+                target = self.position(position)
+            else:
+                # After native mining depleted a node, reacquire around the
+                # actor rather than searching around the stale original
+                # coordinate. This only selects a target: approach() still
+                # walks normally and begin_mine() enforces reach.
+                target = self.call("next_mine_target", resource, 64).get("position")
+                if not isinstance(target, dict):
+                    raise RuntimeError("No mineable resource observed near the walking actor")
             self.approach(Position(**target))
             self.call("begin_mine", target, resource, quantity - gained)
             try:

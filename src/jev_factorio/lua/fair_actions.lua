@@ -89,6 +89,28 @@ fair.begin_mine = function(position, item, quantity)
     return {baseline = fair.job.baseline}
 end
 
+fair.next_mine_target = function(item, radius)
+    local player = fair.actor()
+    assert(type(item) == "string", "Mining item must be a string")
+    assert(type(radius) == "number" and radius > 0 and radius <= 64,
+        "Mining search radius is invalid")
+    local filter = {position = player.position, radius = radius}
+    if item == "wood" then filter.type = "tree" else filter.name = item end
+    local best, best_distance
+    for _, entity in pairs(player.surface.find_entities_filtered(filter)) do
+        if entity.valid and entity.minable then
+            local horizontal = entity.position.x - player.position.x
+            local vertical = entity.position.y - player.position.y
+            local distance = horizontal * horizontal + vertical * vertical
+            if not best or distance < best_distance then
+                best, best_distance = entity, distance
+            end
+        end
+    end
+    if not best then return {} end
+    return {position = {x = best.position.x, y = best.position.y}}
+end
+
 fair.observe = function()
     local player = fair.actor()
     local job = fair.job or {}
