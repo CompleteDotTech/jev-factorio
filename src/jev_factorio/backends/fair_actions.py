@@ -82,19 +82,14 @@ class FairActions:
             raise ValueError("Mining quantity must be positive")
         gained = 0
         for attempt in range(quantity):
-            target = json.loads(self.command(
-                "local player = storage.fair.actor(); local center = helpers.json_to_table("
-                + json.dumps(json.dumps(self.position(position))) + "); "
-                "local filter = {position=center, radius=32}; "
-                + ("filter.type='tree'; " if resource == "wood" else
-                   "filter.name=" + json.dumps(resource) + "; ")
-                + "local entities = player.surface.find_entities_filtered(filter); "
-                "table.sort(entities, function(left, right) return "
-                "(left.position.x-player.position.x)^2+(left.position.y-player.position.y)^2 < "
-                "(right.position.x-player.position.x)^2+(right.position.y-player.position.y)^2 end); "
-                "assert(entities[1], 'No nearby mining target'); "
-                "rcon.print(helpers.table_to_json(entities[1].position))"
-            ))
+            # Reacquire from the actor after every depleted node.  The original
+            # observed resource position can point at a tree that was just
+            # removed; searching around it again can turn a valid multi-tree
+            # harvest into an ambiguous dispatch.  This only selects a target:
+            # approach() still walks normally and begin_mine() enforces reach.
+            target = self.call("next_mine_target", resource, 64).get("position")
+            if not isinstance(target, dict):
+                raise RuntimeError("No mineable resource observed near the walking actor")
             self.approach(Position(**target))
             self.call("begin_mine", target, resource, quantity - gained)
             try:

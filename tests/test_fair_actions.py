@@ -150,6 +150,33 @@ def test_native_mining_observes_yield_without_inserting_resources(fair_runtime):
     """)
 
 
+def test_next_mining_target_uses_actor_position_and_skips_depleted_entities(fair_runtime):
+    fair_runtime.execute("""
+        local depleted = {valid = true, minable = false, position = {x = 30, y = 0}}
+        local distant = {valid = true, minable = true, position = {x = 45, y = 0}}
+        local nearby = {valid = true, minable = true, position = {x = 31, y = 0}}
+        player.position = {x = 30, y = 0}
+        surface.find_entities_filtered = function(filter)
+            assert(filter.type == "tree")
+            assert(filter.position.x == 30 and filter.position.y == 0)
+            assert(filter.radius == 64)
+            return {depleted, distant, nearby}
+        end
+        local target = storage.fair.next_mine_target("wood", 64)
+        assert(target.position.x == 31 and target.position.y == 0)
+        assert(player.position.x == 30 and player.position.y == 0)
+        assert(quantities.coal == 0)
+    """)
+
+
+def test_next_mining_target_enforces_fair_actor_invariants(fair_runtime):
+    fair_runtime.execute("game.speed = 2")
+    with pytest.raises(Exception, match="normal game speed"):
+        fair_runtime.execute('storage.fair.next_mine_target("wood", 64)')
+    assert fair_runtime.eval("player.position.x") == 0
+    assert fair_runtime.eval("quantities.coal") == 0
+
+
 def test_mining_rejects_remote_target_and_stops_if_reach_changes(fair_runtime):
     fair_runtime.execute("""
         reachable = false
@@ -284,6 +311,53 @@ def test_place_entity_uses_selected_direction_and_preserves_exact_direction(monk
         ("place", ("offshore-pump", {"x": 3.0, "y": 4.0}, Direction.LEFT.value))
     ]
     assert approaches[0][0] == Position(x=3, y=4)
+
+
+def test_harvest_reacquires_live_target_after_a_partial_native_yield(monkeypatch):
+    import sys
+    import types
+    from dataclasses import dataclass
+
+    @dataclass
+    class Position:
+        x: float
+        y: float
+
+    fle = types.ModuleType("fle")
+    fle_env = types.ModuleType("fle.env")
+    fle_env.Position = Position
+    monkeypatch.setitem(sys.modules, "fle", fle)
+    monkeypatch.setitem(sys.modules, "fle.env", fle_env)
+
+    from jev_factorio.backends.fair_actions import FairActions
+
+    fair = object.__new__(FairActions)
+    calls = []
+    approaches = []
+    targets = iter(({"x": 3, "y": 4}, {"x": 5, "y": 6}))
+
+    def call(function, *arguments):
+        calls.append((function, arguments))
+        if function == "next_mine_target":
+            return {"position": next(targets)}
+        if function == "begin_mine":
+            return {}
+        raise AssertionError(function)
+
+    monkeypatch.setattr(fair, "call", call)
+    monkeypatch.setattr(fair, "approach",
+                        lambda position: approaches.append(position))
+    yields = iter(({"gained": 1}, {"gained": 1}))
+    monkeypatch.setattr(fair, "wait", lambda: next(yields))
+
+    assert fair.harvest("wood", Position(x=-999, y=-999), 2) == 2
+    assert calls == [
+        ("next_mine_target", ("wood", 64)),
+        ("begin_mine", ({"x": 3, "y": 4}, "wood", 2)),
+        ("next_mine_target", ("wood", 64)),
+        ("begin_mine", ({"x": 5, "y": 6}, "wood", 1)),
+    ]
+    assert approaches == [Position(x=3, y=4), Position(x=5, y=6)]
 
 
 def test_failed_build_returns_all_cursor_items(fair_runtime):
