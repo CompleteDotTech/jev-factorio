@@ -101,6 +101,28 @@ class NativeFactory:
             self.prototype(state["name"]), Position(**state["position"])
         )
 
+    @staticmethod
+    def fluid_connection_points(entity: Any, fluid: str, *, output: bool) -> list[Any]:
+        """Return FLE-observed pipe cells for one fluid without mutating the world."""
+        if output and fluid == "steam":
+            steam_output = getattr(entity, "steam_output_point", None)
+            if steam_output is not None:
+                return [steam_output]
+        attribute = "output_connection_points" if output else "input_connection_points"
+        typed = list(getattr(entity, attribute, []) or [])
+        if typed:
+            accepted = {fluid} if output else {"", fluid}
+            matches = [point for point in typed if getattr(point, "type", "") in accepted]
+            if matches:
+                return matches
+            direction = "output" if output else "input"
+            raise ValueError(f"Requested {direction} fluid has no native connection point")
+        generic = list(getattr(entity, "connection_points", []) or [])
+        if generic:
+            return generic
+        direction = "output" if output else "input"
+        raise ValueError(f"Requested {direction} fluid has no native connection point")
+
     def position(self, name: str, anchor: str) -> Any:
         from fle.env import Position
 
@@ -169,20 +191,22 @@ class NativeFactory:
                                               parameters["target"], parameters["fluid"]))
                 if branch:
                     source = Position(**branch)
-                elif hasattr(source, "output_connection_points"):
-                    points = [
-                        point for point in source.output_connection_points if point.type == parameters["fluid"]
-                    ]
-                    if not points:
-                        raise ValueError("Requested output fluid has no native connection point")
-                    source = Position(x=points[0].x, y=points[0].y)
-                points = [
-                    point for point in getattr(target, "input_connection_points", [])
-                    if point.type == parameters["fluid"]
-                ]
-                if not points:
-                    raise ValueError("Requested input fluid has no native connection point")
-                target = Position(x=points[0].x, y=points[0].y)
+                    source_points = [source]
+                else:
+                    source_points = self.fluid_connection_points(
+                        source, parameters["fluid"], output=True
+                    )
+                target_points = self.fluid_connection_points(
+                    target, parameters["fluid"], output=False
+                )
+                source, target = min(
+                    ((left, right) for left in source_points for right in target_points),
+                    key=lambda pair: math.dist(
+                        (pair[0].x, pair[0].y), (pair[1].x, pair[1].y)
+                    ),
+                )
+                source = Position(x=source.x, y=source.y)
+                target = Position(x=target.x, y=target.y)
             else:
                 source, target = source.position, target.position
             self.backend._fair.connect(source, target, self.prototype(parameters["kind"]),

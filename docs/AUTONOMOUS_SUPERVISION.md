@@ -86,7 +86,10 @@ distinguish source findings and mock tests from native observation evidence.
   remain in inventory. The controller records a plan failure and returns a
   non-mutating reconciliation step before it may plan another dispatch. Missing
   or conflicting evidence stays uncertain; acknowledgement alone never permits
-  a replay.
+  a replay. An ambiguous pipe or pole connection uses the same fail-closed rule:
+  both endpoint roles must remain, the player force must have zero entities of
+  the connector prototype, and all exactly reserved materials must remain. This
+  deliberately cannot reconcile once any same-prototype connector already exists.
 - `kind: "code"` requires all of `tests_passed`, `checks_passed`,
   `exact_head_reviewed`, `merged`, and `remotes_synced` true, a full `commit` SHA,
   and `pr_url`. The watchdog independently verifies local HEAD and origin/fork

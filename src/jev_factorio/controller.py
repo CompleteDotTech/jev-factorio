@@ -172,6 +172,27 @@ class HierarchicalLoop(AgentLoop):
                     for item, quantity in costs.items())
         )
 
+    def _absent_ambiguous_connection(self, plan: Plan, step, snapshot: GameSnapshot) -> bool:
+        """Prove an ambiguous connection placed no connector before permitting a replan."""
+        pending = self.memory.pending or {}
+        if pending.get("dispatch") != "ambiguous" or step.action != "factory_connect":
+            return False
+        parameters = step.parameters or {}
+        source, target, kind = (
+            parameters.get("source"), parameters.get("target"), parameters.get("kind")
+        )
+        entities = snapshot.factory.get("entities", {})
+        counts = snapshot.factory.get("force_entity_counts")
+        costs = step.costs or {}
+        reserved = self.memory.reservations.get(plan.id)
+        return bool(
+            source in entities and target in entities and kind in {"pipe", "small-electric-pole"}
+            and isinstance(counts, dict) and counts.get(kind, 0) == 0
+            and costs and reserved == costs
+            and all(snapshot.inventory.get(item, 0) >= quantity
+                    for item, quantity in costs.items())
+        )
+
     def _verify_pending(self, snapshot: GameSnapshot) -> dict:
         plan = Plan.from_dict(self.memory.active_plan)
         step = plan.steps[self.memory.step_index]
@@ -190,6 +211,13 @@ class HierarchicalLoop(AgentLoop):
         if self._absent_ambiguous_placement(plan, step, snapshot):
             name = step.parameters["name"]
             reason = (f"Observed no durable {name} placement and retained all reserved "
+                      "materials; replan without replaying the ambiguous dispatch")
+            self.memory.status = "running"
+            self._fail_plan(reason)
+            return self._record(snapshot, "reconcile", reason)
+        if self._absent_ambiguous_connection(plan, step, snapshot):
+            kind = step.parameters["kind"]
+            reason = (f"Observed no durable {kind} construction and retained all reserved "
                       "materials; replan without replaying the ambiguous dispatch")
             self.memory.status = "running"
             self._fail_plan(reason)
