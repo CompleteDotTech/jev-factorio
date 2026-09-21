@@ -352,12 +352,11 @@ def test_harvest_reacquires_live_target_after_a_partial_native_yield(monkeypatch
 
     assert fair.harvest("wood", Position(x=-999, y=-999), 2) == 2
     assert calls == [
+        ("begin_mine", ({"x": -999.0, "y": -999.0}, "wood", 2)),
         ("next_mine_target", ("wood", 64)),
-        ("begin_mine", ({"x": 3, "y": 4}, "wood", 2)),
-        ("next_mine_target", ("wood", 64)),
-        ("begin_mine", ({"x": 5, "y": 6}, "wood", 1)),
+        ("begin_mine", ({"x": 3, "y": 4}, "wood", 1)),
     ]
-    assert approaches == [Position(x=3, y=4), Position(x=5, y=6)]
+    assert approaches == [Position(x=-999.0, y=-999.0), Position(x=3, y=4)]
 
 
 def test_failed_build_returns_all_cursor_items(fair_runtime):

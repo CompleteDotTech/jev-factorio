@@ -82,14 +82,20 @@ class FairActions:
             raise ValueError("Mining quantity must be positive")
         gained = 0
         for attempt in range(quantity):
-            # Reacquire from the actor after every depleted node.  The original
-            # observed resource position can point at a tree that was just
-            # removed; searching around it again can turn a valid multi-tree
-            # harvest into an ambiguous dispatch.  This only selects a target:
-            # approach() still walks normally and begin_mine() enforces reach.
-            target = self.call("next_mine_target", resource, 64).get("position")
-            if not isinstance(target, dict):
-                raise RuntimeError("No mineable resource observed near the walking actor")
+            if gained == 0:
+                # Honor the resource coordinate from the observation that
+                # authorized this action.  It is the target to which the
+                # controller committed, rather than merely a same-name node
+                # near the player.
+                target = self.position(position)
+            else:
+                # After native mining depleted a node, reacquire around the
+                # actor rather than searching around the stale original
+                # coordinate. This only selects a target: approach() still
+                # walks normally and begin_mine() enforces reach.
+                target = self.call("next_mine_target", resource, 64).get("position")
+                if not isinstance(target, dict):
+                    raise RuntimeError("No mineable resource observed near the walking actor")
             self.approach(Position(**target))
             self.call("begin_mine", target, resource, quantity - gained)
             try:
