@@ -1,6 +1,7 @@
 """Consumer acceptance using production writers and offline controllers."""
 import hashlib
 import json
+from copy import deepcopy
 
 import pytest
 
@@ -142,6 +143,85 @@ def test_real_producer_mutations_fail_closed(tmp_path, mutation):
         evaluate_run(path)
 
 
+def test_verifier_checks_captured_bytes_despite_source_aba(tmp_path, monkeypatch):
+    from jev_factorio import research_log
+
+    path = tmp_path / "run"
+    with writer(path) as log:
+        log.emit("checkpoint_written", {"label": "original"})
+    events_path = path / "events.jsonl"
+    valid_bytes = events_path.read_bytes()
+    invalid_bytes = valid_bytes.replace(b"original", b"modified")
+    assert invalid_bytes != valid_bytes
+    events_path.write_bytes(invalid_bytes)
+    actual_verify = research_log.verify_run
+    verifier_paths = []
+
+    def verify_during_valid_source_window(provided_path, **kwargs):
+        verifier_paths.append(provided_path)
+        events_path.write_bytes(valid_bytes)
+        try:
+            return actual_verify(provided_path, **kwargs)
+        finally:
+            events_path.write_bytes(invalid_bytes)
+
+    monkeypatch.setattr(research_log, "verify_run", verify_during_valid_source_window)
+    with pytest.raises(EvidenceError, match="Core evidence verification failed"):
+        evaluate_run(path)
+    assert len(verifier_paths) == 1
+    assert events_path.read_bytes() == invalid_bytes
+
+
+def test_sealed_step_completion_requires_step_start(tmp_path):
+    path = tmp_path / "run"
+    with writer(path) as log:
+        log.emit("step_finished", {"trace_id": "trace-without-start",
+                                   "decision_id": "decision:1", "controller": "flat"})
+    assert read_run(path).integrity["valid"] is True
+    with pytest.raises(EvidenceError, match="completion lacks its unique start"):
+        evaluate_run(path)
+
+
+@pytest.mark.parametrize("ambiguous_return", [False, True])
+def test_actual_pending_poll_can_verify_prior_step_dispatch(tmp_path, ambiguous_return):
+    from jev_factorio.causal_trace import CausalTrace
+
+    path = tmp_path / "run"
+    backend = MockBackend()
+    pending = {"started_tick": 0, "action": "walk_to_coal"}
+
+    def dispatch_operation():
+        outcome = backend.act("walk_to_coal")
+        if ambiguous_return:
+            raise RuntimeError("dispatch acknowledgment unavailable")
+        return outcome
+
+    with writer(path) as log:
+        trace = CausalTrace(log, "flat")
+        trace.begin_step()
+        trace.observe(backend, "before_decision")
+        trace.emit("decision", {"source": "deterministic", "action": "walk_to_coal"})
+        if ambiguous_return:
+            with pytest.raises(RuntimeError, match="acknowledgment unavailable"):
+                trace.dispatch(dispatch_operation, "walk_to_coal", plan_id="plan",
+                               step_index=0, pending=pending)
+        else:
+            trace.dispatch(dispatch_operation, "walk_to_coal", plan_id="plan",
+                           step_index=0, pending=pending)
+        trace.emit("step_finished", {})
+        trace.begin_step()
+        snapshot = trace.observe(backend, "pending_poll")
+        assert trace.verify(Step("walk_to_coal", "near", item="coal"), snapshot,
+                            plan_id="plan", index=0, pending=pending,
+                            phase="pending_poll") is True
+        trace.emit("step_finished", {})
+    result = evaluate_run(path)
+    assert result.summary["verified_actions"] == 1
+    assert result.summary["returned_actions"] == 1
+    assert result.tables["actions"][0]["acknowledged"] is None
+    assert ("verification_after_ambiguous_return" in result.summary["warnings"]) == ambiguous_return
+
+
 @pytest.mark.parametrize("post_observation", [False, True])
 def test_actual_verifier_requires_post_dispatch_observation(tmp_path, post_observation):
     from jev_factorio.causal_trace import CausalTrace
@@ -169,6 +249,50 @@ def test_actual_verifier_requires_post_dispatch_observation(tmp_path, post_obser
     else:
         with pytest.raises(EvidenceError, match="post-dispatch observation"):
             evaluate_run(path)
+
+
+@pytest.mark.parametrize("mutation", [
+    "verification_before_return", "wrong_return_decision",
+    "wrong_verification_decision", "ambiguous_error_return",
+])
+def test_sealed_causal_reference_mutations_are_semantic_errors(tmp_path, mutation):
+    from jev_factorio.causal_trace import CausalTrace
+
+    original = tmp_path / "original"
+    backend = MockBackend()
+    pending = {"started_tick": 0, "action": "walk_to_coal"}
+    with writer(original) as log:
+        trace = CausalTrace(log, "flat")
+        trace.begin_step()
+        trace.observe(backend, "before_decision")
+        trace.emit("decision", {"source": "deterministic", "action": "walk_to_coal"})
+        trace.dispatch(lambda: backend.act("walk_to_coal"), "walk_to_coal",
+                       plan_id="plan", step_index=0, pending=pending)
+        snapshot = trace.observe(backend, "after_action")
+        trace.verify(Step("walk_to_coal", "near", item="coal"), snapshot,
+                     plan_id="plan", index=0, pending=pending, phase="after_action")
+    assert evaluate_run(original).summary["verified_actions"] == 1
+    events = deepcopy(list(read_run(original).events)[1:-1])
+    returned = next(event for event in events if event["event_type"] == "action_returned")
+    verification = next(event for event in events if event["event_type"] == "verification")
+    if mutation == "verification_before_return":
+        events.remove(returned)
+        events.append(returned)
+    elif mutation == "wrong_return_decision":
+        returned["payload"]["decision_id"] = "decision:unrelated"
+    elif mutation == "wrong_verification_decision":
+        verification["payload"]["decision_id"] = "decision:unrelated"
+    else:
+        returned["payload"]["status"] = "error"
+        returned["payload"]["error"] = {"category": "timeout", "http_status": None}
+        returned["payload"].pop("outcome", None)
+    rewritten = tmp_path / "rewritten"
+    with writer(rewritten) as log:
+        for event in events:
+            log.emit(event["event_type"], event["payload"])
+    assert read_run(rewritten).integrity["valid"] is True
+    with pytest.raises(EvidenceError):
+        evaluate_run(rewritten)
 
 
 def test_actual_causal_trace_model_dispatch_observation_and_goal(tmp_path):
