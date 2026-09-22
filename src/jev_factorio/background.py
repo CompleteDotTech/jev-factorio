@@ -146,6 +146,7 @@ class BackgroundWorkLoop(HierarchicalLoop):
             if self.memory.background_job is None:
                 self._trace.emit("background_job_completed", {**evidence, "verified": True,
                                                               "outputs": job.outputs})
+                self._trace.release_attempt(evidence["attempt_id"])
         return snapshot
 
     def _execution_barrier(self, snapshot) -> bool:

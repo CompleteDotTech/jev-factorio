@@ -229,13 +229,16 @@ def test_resume_reconciles_without_inventing_cross_process_identity(tmp_path, fa
             first.step()
     else:
         first.step()
-    assert json.loads(path.read_text())["pending"] is not None
+    saved = json.loads(path.read_text())
+    assert saved["pending"] is not None
     sink, client = Sink(), Client()
     second = HierarchicalLoop(backend, client, checkpoint=str(path), resume_controller=True, research_log=sink)
     assert second.step()["verified"] is True
     verification = events(sink, "verification")[0]
     assert verification["action_id"] is None
     assert verification["action_origin"] == "checkpoint_or_external"
+    assert verification["attempt_id"] == saved["attempt"]["id"]
+    assert verification["attempt_id"] == events(first_sink, "action_prepared")[0]["attempt_id"]
     assert not client.calls and not events(sink, "action_prepared")
     assert backend.calls.count(("act", "walk_to_coal")) == 1
 
@@ -510,3 +513,40 @@ def test_flat_low_confidence_missing_choice_retains_original_fallback(enabled):
     assert record["source"] == "fallback" and record["action"] == "walk_to_coal"
     if enabled:
         assert events(sink, "decision")[0]["requested_action"] is None
+
+
+@pytest.mark.parametrize("controller", [AgentLoop, HierarchicalLoop])
+def test_canonical_events_join_frozen_supervisor_context(tmp_path, monkeypatch, controller):
+    from jev_factorio.provenance import CONTEXT_ENV
+    context = {"run_id": "supervised-run", "segment_id": "segment-2",
+               "execution_id": "execution-3",
+               "code_revision": {"commit": "a" * 40, "source_sha256": "b" * 64}}
+    monkeypatch.setenv(CONTEXT_ENV, json.dumps(context))
+    with ResearchLog(tmp_path / "run", RunConfiguration("mock", "hierarchical", "jev")) as sink:
+        loop = controller(Backend(), Client(), research_log=sink)
+        monkeypatch.setenv(CONTEXT_ENV, json.dumps({**context, "segment_id": "later"}))
+        loop.provenance["segment_id"] = "mutated"
+        loop.step()
+        assert loop._trace._attempt_actions == {}
+    assert verify_run(tmp_path / "run")["complete"]
+    records = [json.loads(line) for line in (tmp_path / "run/events.jsonl").read_text().splitlines()]
+    traced = [record for record in records if "trace_id" in record["payload"]]
+    assert traced and all(record["payload"]["supervisor_provenance"] == context for record in traced)
+    assert all(record["run_id"] != context["run_id"] for record in records)
+    prepared = next(record for record in traced if record["event_type"] == "action_prepared")
+    assert prepared["correlation"]["action_id"] == prepared["payload"]["action_id"]
+    assert prepared["session_id"] == "mock:causal-test"
+    assert prepared["time"]["factorio_tick"] == 0
+
+
+def test_discarded_foreground_attempt_releases_trace_reference():
+    class NoEffect(Backend):
+        def act(self, action):
+            self.calls.append(("act", action))
+            return "not applied"
+
+    loop = HierarchicalLoop(NoEffect(), Client(), research_log=Sink())
+    loop.step()
+    assert loop._trace._attempt_actions
+    loop._fail_plan("Observed safe absence")
+    assert loop._trace._attempt_actions == {}

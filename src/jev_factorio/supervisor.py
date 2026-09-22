@@ -604,8 +604,6 @@ Only report repaired when every acceptance requirement is verified.
                     "pending", "active_plan", "step_index", "reservations", "attempt"
                 )):
                     return False
-            if current.get("attempt_outcomes") != previous.get("attempt_outcomes"):
-                return False
             extension_keys = ("background_schema", "background_job", "background_attempt",
                               "input_routes_schema", "input_commitments")
             if any(key in previous and current.get(key) != previous[key]
@@ -618,6 +616,8 @@ Only report repaired when every acceptance requirement is verified.
                 history = previous.get("history", [])
                 if current.get("history", [])[:len(history)] != history:
                     return False
+            if current.get("attempt_outcomes") != previous.get("attempt_outcomes"):
+                return False
             if any(current.get("failures", {}).get(key, 0) < count
                    for key, count in previous.get("failures", {}).items()):
                 return False

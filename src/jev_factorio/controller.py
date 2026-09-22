@@ -22,8 +22,8 @@ from .memory import CampaignMemory
 from .planning.goals import GOALS, completed, goal_order
 from .skills import Plan, compile_plans
 from .state import GameSnapshot
-from .telemetry import DISPATCH_STAGES, error_code, make_attempt, phase, utc_now, validate_phase
 from .provenance import gameplay_context
+from .telemetry import DISPATCH_STAGES, error_code, make_attempt, phase, utc_now, validate_phase
 
 
 def _json_safe(value):
@@ -116,6 +116,7 @@ class HierarchicalLoop(AgentLoop):
             "finished_at_utc": utc_now(), "latency_seconds": latency,
         })
         self.memory.attempt_outcomes = self.memory.attempt_outcomes[-64:]
+        self._trace.release_attempt(attempt["id"])
         self.memory.attempt = None
         self._attempt_clock = None
 
@@ -147,6 +148,10 @@ class HierarchicalLoop(AgentLoop):
                          details={"persisted": self.checkpoint is not None})
 
     def _clear_plan(self) -> None:
+        attempt = self.memory.attempt
+        background = getattr(self.memory, "background_attempt", None)
+        if attempt is not None and (background is None or background["id"] != attempt["id"]):
+            self._trace.release_attempt(attempt["id"])
         if self.memory.active_plan:
             self.memory.release(self.memory.active_plan["id"])
         self.memory.active_plan = None
