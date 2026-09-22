@@ -33,7 +33,7 @@ class ReceiptBackend:
     def execute(self, action, parameters):
         self.calls.append((action, deepcopy(parameters)))
         self.state.tick += 1
-        quantity = 10 if self.mode == "partial" else parameters["quantity"]
+        quantity = 10 if self.mode == "partial" else 0 if self.mode == "zero" else parameters["quantity"]
         self.queued = {**parameters, "unit_number": 7, "extracting": False, "quantity": quantity}
         if self.mode not in {"delayed", "no_effect"}:
             self.publish()
@@ -53,7 +53,7 @@ class ReceiptBackend:
         self.queued = None
 
 
-def install_plan(monkeypatch, backend, *, action="factory_insert"):
+def install_plan(monkeypatch, backend, *, action="factory_insert", reserve_transfer=False):
     def compiler(goal, snapshot):
         if action == "factory_wait":
             step = Step(action, "machine_output", "automation-science-pack", 20,
@@ -61,7 +61,8 @@ def install_plan(monkeypatch, backend, *, action="factory_insert"):
         else:
             parameters = {"role": "utility:lab", "item": "automation-science-pack", "quantity": 20,
                           "receipt": f"transfer:{len(backend.calls)}"}
-            step = Step(action, "transfer", parameters=parameters)
+            costs = {"automation-science-pack": 20} if reserve_transfer else {}
+            step = Step(action, "transfer", costs=costs, parameters=parameters)
         return [Plan("same-plan-id", goal, "Synthetic receipt exercise", (step,))], ""
 
     monkeypatch.setattr("jev_factorio.controller.compile_plans", compiler)
