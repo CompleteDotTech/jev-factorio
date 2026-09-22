@@ -4,8 +4,10 @@ from __future__ import annotations
 import math
 
 from .state import GameSnapshot
+from . import output_buffers
 
 COMMAND_FIELDS = {
+    output_buffers.COMMAND: output_buffers.FIELDS,
     "factory_bind": set(),
     "factory_explore": {"radius"},
     "factory_gather": {"resource", "quantity"},
@@ -24,11 +26,14 @@ EFFECTS = {
     "player_bound", "machine", "machine_recipe", "machine_input", "machine_fuel",
     "machine_output", "connection", "research_started", "researched", "research_progress",
     "crafting_idle", "rocket_ready", "rocket_parts", "rocket_launched", "produced", "transfer",
-    "explored", "powered", "craft_job_complete",
+    "explored", "powered", "craft_job_complete", *output_buffers.EFFECTS,
 }
 
 
 def validate_command(action: str, parameters: dict) -> None:
+    if action == output_buffers.COMMAND:
+        output_buffers.validate(parameters)
+        return
     if action not in COMMAND_FIELDS or not isinstance(parameters, dict):
         raise ValueError("Unknown factory command")
     if set(parameters) != COMMAND_FIELDS[action]:
@@ -64,6 +69,10 @@ def connected(factory: dict, source: str, target: str, kind: str, fluid: str) ->
 
 def satisfied(effect: str, item: str, threshold: float, parameters: dict, snapshot: GameSnapshot,
               action: str = "") -> bool:
+    if effect == "buffer_component":
+        return action == output_buffers.COMMAND and output_buffers.component_complete(parameters, snapshot)
+    if effect == "buffer_flow":
+        return action == "factory_wait" and output_buffers.flow_complete(parameters.get("role", ""), item, snapshot)
     factory = snapshot.factory
     entities = factory.get("entities", {})
     machine = entities.get(parameters.get("role", ""), {})
@@ -116,6 +125,14 @@ def satisfied(effect: str, item: str, threshold: float, parameters: dict, snapsh
 
 def allowed(action: str, parameters: dict, snapshot: GameSnapshot) -> bool:
     validate_command(action, parameters)
+    if action == output_buffers.COMMAND:
+        return output_buffers.allowed(parameters, snapshot)
+    if "output_buffers" in snapshot.factory:
+        try:
+            if not output_buffers.permits(action, parameters, snapshot):
+                return False
+        except ValueError:
+            return False
     factory = snapshot.factory
     entities = factory.get("entities", {})
     machine = entities.get(parameters.get("role", ""), {})
