@@ -1135,6 +1135,7 @@ def test_ambiguous_connection_reconciliation_fails_closed(change):
     }
     state.factory["force_entity_counts"] = {"pipe": 0}
     controller = object.__new__(HierarchicalLoop)
+    controller.provenance = {}
     controller.memory = CampaignMemory(
         session_id="test-factory", target="rocket_launch", active_goal="rocket_launch",
         active_plan=plan.to_dict(), pending={

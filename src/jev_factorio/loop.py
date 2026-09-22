@@ -24,6 +24,7 @@ from .research_log import EventSink, validate_output_paths
 from .jev_client import make_client
 from .questions import build_questions
 from .state import GameSnapshot
+from .provenance import gameplay_context
 
 
 def fallback_policy(snapshot: GameSnapshot) -> str:
@@ -51,6 +52,7 @@ class AgentLoop:
                  tick_seconds: float = 2.0, log_file: str | None = None, *,
                  research_log: EventSink | None = None):
         validate_output_paths(research_log, log_file)
+        self.provenance = gameplay_context()
         self.backend = backend
         self.jev = jev or make_client()
         self._trace = CausalTrace(research_log, "flat", self.jev)
@@ -90,6 +92,7 @@ class AgentLoop:
         self._trace.emit("verification", {"phase": "flat", "verified": None,
                                           "reason": "flat_controller_has_no_postcondition_predicate"})
         record = {
+            **self.provenance,
             "tick": snapshot.tick, "goal": answers["goal"]["choice"],
             "action": action, "source": source,
             "confidence": action_ans["confidence"],
