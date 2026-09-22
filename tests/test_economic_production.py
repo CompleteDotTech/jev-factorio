@@ -128,6 +128,23 @@ def test_machine_construction_does_not_recursively_invest_in_its_own_gear_assemb
     assert not getattr(planner, '_economic_acquiring', False)
 
 
+def test_optional_gear_machine_falls_back_to_paid_handcraft_when_its_kit_needs_gears():
+    data, state = economic_catalog(), economic_state()
+    state.inventory = {'iron-plate': 40}
+    data.recipes['assembling-machine-1'] = recipe(
+        'assembling-machine-1', {'iron-gear-wheel': 5}, enabled=True
+    )
+    planner = ReadyWorkPlanner(data, state, 'rocket_launch')
+    planner._economic_products = {'iron-gear-wheel': 1000}
+
+    step = planner._need('iron-gear-wheel', 20).steps[0]
+
+    assert step.action == 'factory_craft'
+    assert step.parameters == {'recipe': 'iron-gear-wheel', 'batches': 20}
+    assert step.costs == {'iron-plate': 40}
+    assert 'factory_place' not in step.action
+
+
 def test_unsupported_or_locked_investment_is_not_free_capability():
     data = economic_catalog()
     assert investment_cost(data, 'assembling-machine-1', []) is None
