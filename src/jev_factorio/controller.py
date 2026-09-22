@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 import math
+import time
+from copy import deepcopy
+from uuid import uuid4
 from dataclasses import asdict
 from pathlib import Path
 
@@ -17,6 +20,7 @@ from .memory import CampaignMemory
 from .planning.goals import GOALS, completed, goal_order
 from .skills import Plan, compile_plans
 from .state import GameSnapshot
+from .telemetry import DISPATCH_STAGES, error_code, make_attempt, phase, utc_now, validate_phase
 
 
 def _json_safe(value):
@@ -68,6 +72,9 @@ class HierarchicalLoop(AgentLoop):
         self.max_stalled_decisions = max_stalled_decisions
         self.memory: CampaignMemory | None = None
         self._decision: Decision | None = None
+        self._process_id = uuid4().hex
+        self._attempt_clock: tuple[str, float] | None = None
+        self._phases: list[dict] = []
         self.catalog = None
         if target in {"rocket_launch", "iron_smelting", "steam_power", "automation_science"} \
                 and hasattr(backend, "enable_factory"):
@@ -78,7 +85,38 @@ class HierarchicalLoop(AgentLoop):
     def terminal(self) -> bool:
         return self.memory is not None and self.memory.status in {"completed", "blocked", "uncertain"}
 
-    def _observe(self) -> GameSnapshot:
+    def _diagnostic_trace(self, event: dict) -> None:
+        validate_phase(event)
+        self._phases.append(deepcopy(event))
+        self._phases = self._phases[-64:]
+        if self.memory is not None and self.memory.attempt is not None:
+            if event["stage"] in DISPATCH_STAGES:
+                self.memory.attempt["dispatch_phases"][event["stage"]] = deepcopy(event)
+                self._save()
+            elif event["status"] == "failed":
+                self.memory.attempt["observation_error"] = deepcopy(event)
+                self._save()
+
+    def _finish_attempt(self, snapshot: GameSnapshot, outcome: str = "verified") -> None:
+        attempt = self.memory.attempt
+        if attempt is None:
+            raise ValueError("Cannot finish an unidentified pending action")
+        latency = None
+        if self._attempt_clock is not None and self._attempt_clock[0] == attempt["id"]:
+            latency = time.perf_counter() - self._attempt_clock[1]
+        self.memory.attempt_outcomes.append({
+            **deepcopy(attempt), "outcome": outcome, "finished_tick": snapshot.tick,
+            "finished_at_utc": utc_now(), "latency_seconds": latency,
+        })
+        self.memory.attempt_outcomes = self.memory.attempt_outcomes[-64:]
+        self.memory.attempt = None
+        self._attempt_clock = None
+
+    def _observe(self, stage: str = "observe") -> GameSnapshot:
+        with phase(stage, self._diagnostic_trace):
+            return self._observe_snapshot()
+
+    def _observe_snapshot(self) -> GameSnapshot:
         snapshot = self.backend.observe()
         if not snapshot.session_id or snapshot.world_kind not in {"mock", "fle"}:
             raise ValueError("Hierarchical control requires identified backend/session telemetry")
@@ -104,6 +142,8 @@ class HierarchicalLoop(AgentLoop):
             self.memory.release(self.memory.active_plan["id"])
         self.memory.active_plan = None
         self.memory.pending = None
+        self.memory.attempt = None
+        self._attempt_clock = None
         self.memory.step_index = 0
 
     def _fail_plan(self, reason: str) -> None:
@@ -137,7 +177,7 @@ class HierarchicalLoop(AgentLoop):
         self._save()
         decision = self._decision
         record = {
-            "schema_version": 1, "controller": "hierarchical", "policy": self.policy,
+            "schema_version": 2, "controller": "hierarchical", "policy": self.policy,
             "tick": before.tick, "session_id": before.session_id,
             "world_kind": before.world_kind, "goal": self.memory.active_goal,
             "target": self.target, "status": self.memory.status, "reason": self.memory.reason,
@@ -149,7 +189,10 @@ class HierarchicalLoop(AgentLoop):
             "requested_model": getattr(self.jev, "model", None),
             "resolved_model": getattr(self.jev, "last_model", None) if decision else None,
             "usage": getattr(self.jev, "last_usage", None) if decision else None,
-            "pending": self.memory.pending, "history": self.memory.history[-8:],
+            "pending": deepcopy(self.memory.pending), "history": deepcopy(self.memory.history[-8:]),
+            "process_id": self._process_id, "recorded_at_utc": utc_now(),
+            "phases": deepcopy(self._phases), "attempt": deepcopy(self.memory.attempt),
+            "attempt_outcomes": deepcopy(self.memory.attempt_outcomes[-8:]),
         }
         if getattr(self, "factory_scheduling", "serial") != "serial":
             record["factory_scheduling"] = self.factory_scheduling
@@ -247,7 +290,10 @@ class HierarchicalLoop(AgentLoop):
         plan = Plan.from_dict(self.memory.active_plan)
         step = plan.steps[self.memory.step_index]
         pending = self.memory.pending
-        if step.satisfied(snapshot):
+        with phase("verification", self._diagnostic_trace):
+            verified = step.satisfied(snapshot)
+        if verified:
+            self._finish_attempt(snapshot)
             self.memory.status, self.memory.reason = "running", ""
             self.memory.release(plan.id)
             self.memory.pending = None
@@ -284,6 +330,7 @@ class HierarchicalLoop(AgentLoop):
             return self._record(snapshot, "reconcile", reason)
         boiler = snapshot.factory.get("entities", {}).get("utility:boiler", {})
         if step.action == "factory_wait" and boiler and boiler.get("fuel", {}).get("coal", 0) < 5:
+            self._finish_attempt(snapshot, "wait_replanned")
             self.memory.event("maintenance_required", reason="boiler fuel", tick=snapshot.tick)
             self._clear_plan()
             return self._record(snapshot, "observe", "Replan a nonmutating wait to replenish boiler fuel")
@@ -297,6 +344,7 @@ class HierarchicalLoop(AgentLoop):
                      and candidate.steps[0].allowed(snapshot)
                      and not candidate.steps[0].satisfied(snapshot)]
             if ready:
+                self._finish_attempt(snapshot, "wait_replanned")
                 self.memory.event("passive_wait_yielded", plan=plan.id,
                                   candidates=[candidate.id for candidate in ready], tick=snapshot.tick)
                 self._clear_plan()
@@ -306,6 +354,7 @@ class HierarchicalLoop(AgentLoop):
                    or pending["polls"] >= self.max_pending_polls)
         if expired:
             if step.action in {"idle", "factory_wait"}:
+                self._finish_attempt(snapshot, "wait_expired")
                 self._fail_plan("Production made no verified progress within the observation budget")
                 return self._record(snapshot, "observe", self.memory.reason)
             # Execution may have partially mutated the game. Do not automatically
@@ -339,6 +388,7 @@ class HierarchicalLoop(AgentLoop):
 
     def step(self) -> dict:
         self._decision = None
+        self._phases = []
         snapshot = self._observe()
         if self.memory.status == "uncertain" and self.memory.pending:
             return self._verify_pending(snapshot)
@@ -351,13 +401,15 @@ class HierarchicalLoop(AgentLoop):
         if self.terminal:
             return self._record(snapshot, "observe", self.memory.reason, verified=True)
         if self.memory.active_plan is None:
-            plans, blocker = self._compile_candidates(snapshot)
+            with phase("planning", self._diagnostic_trace):
+                plans, blocker = self._compile_candidates(snapshot)
             plans = [p for p in plans if self.memory.failures.get(p.id, 0) < 2]
             if not plans:
                 self.memory.status, self.memory.reason = "blocked", blocker or "Plan failure budget exhausted"
                 return self._record(snapshot, "observe", self.memory.reason)
             if self.policy == "deterministic":
-                chosen = self._fallback_plan(plans)
+                with phase("selection", self._diagnostic_trace):
+                    chosen = self._fallback_plan(plans)
                 self._decision = Decision(chosen.id, "deterministic")
             else:
                 facts = self._model_facts(snapshot)
@@ -374,8 +426,9 @@ class HierarchicalLoop(AgentLoop):
                         "ultimate_goal": self.memory.active_goal,
                     }
                 try:
-                    self._decision = select_plan(self.jev, state, plans, self.confidence_floor,
-                                                 self.max_request_bytes)
+                    with phase("selection", self._diagnostic_trace):
+                        self._decision = select_plan(self.jev, state, plans, self.confidence_floor,
+                                                     self.max_request_bytes)
                 except ValueError as error:
                     self._decision = Decision(None, "observe", str(error))
                 chosen = next((p for p in plans if p.id == self._decision.plan_id), None)
@@ -396,7 +449,7 @@ class HierarchicalLoop(AgentLoop):
             self._save()
 
         # The world can change while a remote model evaluates the old snapshot.
-        fresh = self._observe()
+        fresh = self._observe("pre_dispatch_observe")
         if self._execution_barrier(fresh):
             return self._record(snapshot, "observe", self.memory.reason, fresh)
         plan = Plan.from_dict(self.memory.active_plan)
@@ -417,24 +470,38 @@ class HierarchicalLoop(AgentLoop):
             return self._record(snapshot, "observe", str(error), fresh)
         self.memory.pending = {"started_tick": fresh.tick, "polls": 0,
                                "action": step.action, "dispatch": "prepared"}
+        unit = fresh.factory.get("entities", {}).get((step.parameters or {}).get("role"), {}).get("unit_number")
+        self.memory.attempt = make_attempt(
+            fresh.session_id, self.target, self.memory.active_plan, index, self.memory.pending,
+            process_id=self._process_id,
+            unit_number=unit if type(unit) is int and unit > 0 else None,
+        )
+        self._attempt_clock = (self.memory.attempt["id"], time.perf_counter())
         # Write-ahead checkpoint: after a crash even a prepared command is
         # treated as potentially dispatched, never blindly replayed.
         self._save()
         try:
-            outcome = (self.backend.execute(step.action, step.parameters or {})
-                       if step.action.startswith("factory_") else self.backend.act(step.action))
+            with phase("dispatch", self._diagnostic_trace):
+                if step.action.startswith("factory_"):
+                    traced = getattr(self.backend, "execute_traced", None)
+                    outcome = (traced(step.action, step.parameters or {}, self._diagnostic_trace) if traced else
+                               self.backend.execute(step.action, step.parameters or {}))
+                else:
+                    outcome = self.backend.act(step.action)
         except Exception as error:
             self.memory.pending["dispatch"] = "ambiguous"
-            self.memory.event("dispatch_error", error_type=type(error).__name__, tick=fresh.tick)
+            self.memory.event("dispatch_error", error_type=error_code(error), tick=fresh.tick)
             return self._record(snapshot, step.action, "Ambiguous dispatch; verification required", fresh)
         self.memory.pending["dispatch"] = "returned"
         self._save()
-        after = self._observe()  # On failure, pending remains durable for the next iteration.
+        after = self._observe("post_dispatch_observe")  # Pending survives failed observation.
         if self._execution_barrier(after):
             return self._record(snapshot, step.action,
                                 str(outcome) + "; pending retained for reconciliation", after)
-        verified = step.satisfied(after)
+        with phase("verification", self._diagnostic_trace):
+            verified = step.satisfied(after)
         if verified:
+            self._finish_attempt(after)
             self.memory.release(plan.id)
             self.memory.pending = None
             self.memory.step_index += 1

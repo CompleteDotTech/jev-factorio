@@ -9,6 +9,7 @@ from jev_factorio.craft_jobs import CraftJob
 from jev_factorio.memory import CampaignMemory
 from jev_factorio.planning.background_work import independent_candidates, research_demands
 from jev_factorio.skills import Plan, Step
+from jev_factorio.telemetry import make_attempt
 from test_factory import catalog, machine, recipe, snapshot
 
 
@@ -233,6 +234,10 @@ def test_uncertain_background_does_not_erase_unrelated_pending_mutation(tmp_path
              parameters={"resource": "iron-ore", "quantity": 5}),))
     loop.memory.active_plan = plan.to_dict()
     loop.memory.pending = {"action": "factory_gather", "started_tick": 10, "polls": 1, "dispatch": "ambiguous"}
+    loop.memory.attempt = make_attempt(
+        loop.memory.session_id, loop.target, loop.memory.active_plan,
+        0, loop.memory.pending, process_id=loop._process_id,
+    )
     backend.state.inventory["iron-ore"] = 5
     backend.state.factory["craft_job"]["status"] = "invalid"
     pending = deepcopy(loop.memory.pending)

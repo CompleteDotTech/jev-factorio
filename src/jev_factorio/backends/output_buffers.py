@@ -5,6 +5,7 @@ import json
 from importlib.resources import files
 
 from ..output_buffers import COMMAND, PARTS, validate
+from ..telemetry import Trace, phase
 
 
 class OutputBufferFactory:
@@ -15,16 +16,21 @@ class OutputBufferFactory:
     def __getattr__(self, name):
         return getattr(self.native, name)
 
-    def execute(self, action: str, parameters: dict) -> str:
+    def execute(self, action: str, parameters: dict, *, trace: Trace | None = None) -> str:
         if action != COMMAND:
-            return self.native.execute(action, parameters)
+            if trace is None:
+                return self.native.execute(action, parameters)
+            return self.native.execute(action, parameters, trace=trace)
         from fle.env import Position
 
         validate(parameters)
         # Preparation freezes observed geometry but creates no game entity.
         # The controller has already checkpointed this exact command as pending.
-        target = json.loads(self.native.call("prepare_output_buffer", parameters))
-        self.native.backend._fair.approach(Position(**target["position"]), PARTS[parameters["part"]])
+        with phase("entity_lookup", trace):
+            target = json.loads(self.native.call("prepare_output_buffer", parameters))
+        with phase("approach", trace):
+            self.native.backend._fair.approach(Position(**target["position"]), PARTS[parameters["part"]])
         # Place + register + paid receipt in one native RPC; never retry here.
-        self.native.call("build_output_buffer", parameters)
+        with phase("transfer_rpc", trace):
+            self.native.call("build_output_buffer", parameters)
         return "Paid buffer component returned; placement and flow require observation"

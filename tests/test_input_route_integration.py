@@ -259,7 +259,8 @@ def test_background_memory_composes_without_losing_fields(tmp_path):
     loop = controller(backend, tmp_path, kind=combined)
     loop._observe()
     memory = combined.memory_type.load(tmp_path / "state.json", backend.state.session_id, "rocket_launch")
-    assert memory.background_schema == 1 and memory.background_job is None
+    assert memory.background_schema == 2 and memory.background_job is None
+    assert memory.background_attempt is None
     assert memory.input_routes_schema == 1 and memory.input_commitments == {}
 
 

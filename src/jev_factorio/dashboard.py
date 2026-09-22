@@ -236,8 +236,8 @@ def attach(loop: Any, writer: EventWriter) -> None:
         original = getattr(loop, name)
         setattr(loop, name, lambda *args, **kwargs: wrapper(original, *args, **kwargs))
 
-    def observe(original):
-        snapshot = measured("observation", 2, original)
+    def observe(original, *args, **kwargs):
+        snapshot = measured("observation", 2, lambda: original(*args, **kwargs))
         try:
             emit("observation", 2, state=project_state(snapshot.for_jev()))
         except Exception:

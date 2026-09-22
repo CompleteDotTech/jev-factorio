@@ -39,10 +39,10 @@ class OutputBufferMixin:
             self._buffer_save_poisoned = True
             raise
 
-    def _observe(self):
+    def _observe(self, stage="observe"):
         if self._buffer_save_poisoned:
             raise RuntimeError("Buffer checkpoint persistence failed; reconstruct before continuing")
-        snapshot = super()._observe()
+        snapshot = super()._observe(stage)
         try:
             rows = sources(snapshot)
             if any(row.get("state") == "fault" for row in rows.values()):
