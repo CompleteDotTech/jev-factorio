@@ -111,7 +111,7 @@ def test_history_is_bounded():
     assert memory.history[-1]["tick"] == 199
 
 
-@pytest.mark.parametrize("field,value", [("version", 2), ("step_index", -1),
+@pytest.mark.parametrize("field,value", [("version", 3), ("step_index", -1),
                                          ("completed_goals", {"rocket_launch": 99}),
                                          ("history", ["not-an-event"]),
                                          ("failures", {"plan": -1})])

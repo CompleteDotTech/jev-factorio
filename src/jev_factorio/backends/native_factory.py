@@ -9,6 +9,7 @@ from typing import Any
 from ..factory_contract import validate_command
 from ..planning.catalog import Catalog
 from ..state import GameSnapshot
+from ..telemetry import Trace, phase
 
 
 class NativeFactory:
@@ -194,7 +195,7 @@ class NativeFactory:
         )
         return Position(**json.loads(raw))
 
-    def execute(self, action: str, parameters: dict) -> str:
+    def execute(self, action: str, parameters: dict, *, trace: Trace | None = None) -> str:
         validate_command(action, parameters)
         tools = self.backend._tools
         if action == "factory_wait":
@@ -227,9 +228,11 @@ class NativeFactory:
             self.call("configure", parameters["role"], parameters["recipe"])
             return f"Configured {parameters['role']}"
         if action in {"factory_insert", "factory_extract"}:
-            self.approach_role(parameters["role"])
-            self.call("transfer", parameters["role"], parameters["item"],
-                      parameters["quantity"], parameters["receipt"], action == "factory_extract")
+            with phase("approach", trace):
+                self.approach_role(parameters["role"])
+            with phase("transfer_rpc", trace):
+                self.call("transfer", parameters["role"], parameters["item"],
+                          parameters["quantity"], parameters["receipt"], action == "factory_extract")
             return f"Transferred {parameters['quantity']} {parameters['item']} ({parameters['receipt']})"
         if action == "factory_connect":
             from fle.env import Position
