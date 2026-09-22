@@ -236,6 +236,7 @@ explicit, hash-verified blob contract is integrated with the writer.
 ```sh
 PYTHONPATH=src python -m pytest tests/test_replay.py -q
 PYTHONPATH=src python -m pytest tests/test_replay_controller_integration.py -q
+PYTHONPATH=src python -m pytest tests/test_replay_research.py -q
 PYTHONPATH=src python -m pytest tests/ -q
 python -m compileall -q src
 ```
@@ -245,6 +246,11 @@ crash prefixes, malformed-field mutations, limits, output safety, and a fresh
 process with live-client imports, sockets, and process execution forbidden.
 The integration file uses the repository's actual `MockBackend`,
 `MockJevClient`, flat loop, and hierarchical loop to generate legacy records,
-then forbids further client/backend calls while replaying them. Existing
-Python 3.10/3.12 CI discovers both files automatically. Synthetic and mock tests
+then forbids further client/backend calls while replaying them.
+The research integration file additionally generates canonical writer/trace
+evidence and actual flat/hierarchical controller runs, checks original hash
+identity, and rejects modified bytes and resealed contradictory causal claims.
+It requires the canonical core and final causal controller integration; no
+conditional skips replace that dependency gate.
+Python 3.10/3.12 CI discovers these files automatically. Synthetic and mock tests
 are not native Factorio or provider-performance measurements.

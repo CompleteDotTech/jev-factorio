@@ -124,3 +124,34 @@ def test_noncanonical_manifest_never_claims_verified_integrity(tmp_path):
     assert report.status == "invalid"
     assert report.integrity["status"] == "invalid"
     assert report.decisions == []
+
+
+@pytest.mark.parametrize("controller", ["flat", "hierarchical"])
+def test_final_mock_controller_producer_replays_without_execution(tmp_path, monkeypatch, controller):
+    from jev_factorio.research_log import ResearchLog, RunConfiguration, verify_run
+    from jev_factorio.backends.mock import MockBackend
+    from jev_factorio.controller import HierarchicalLoop
+    from jev_factorio.loop import AgentLoop
+    from jev_factorio.jev_client import MockJevClient
+
+    path = tmp_path / "research"
+    backend, client = MockBackend(), MockJevClient()
+    with ResearchLog(path, RunConfiguration("mock", controller, "jev"), environ={}) as sink:
+        options = {"jev": client, "tick_seconds": 0, "research_log": sink}
+        loop = (HierarchicalLoop(backend, target="bootstrap_mining", **options)
+                if controller == "hierarchical" else AgentLoop(backend, **options))
+        loop.run(steps=40 if controller == "hierarchical" else 8)
+    expected = verify_run(path)
+    before = {entry.name: entry.read_bytes() for entry in path.iterdir()}
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Replay executed live controller behavior")
+
+    monkeypatch.setattr(backend, "observe", forbidden)
+    monkeypatch.setattr(backend, "act", forbidden)
+    monkeypatch.setattr(client, "evaluate", forbidden)
+    report = replay_log(path, format="research-v1", expected_head=expected["final_event_hash"])
+    assert report.status == "incomplete", report.to_dict()["findings"]
+    assert report.integrity["status"] == "verified_source"
+    assert report.decisions
+    assert before == {entry.name: entry.read_bytes() for entry in path.iterdir()}
