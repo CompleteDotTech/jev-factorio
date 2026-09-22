@@ -910,6 +910,89 @@ def test_lua_transfers_conserve_items_and_reject_replay(capacity):
         assert lua.eval("source_count + target_count") == 5
 
 
+def test_lua_furnace_coal_transfer_targets_fuel_inventory_after_fair_reach_check():
+    lua = pytest.importorskip("lupa.lua54").LuaRuntime()
+    lua.execute("""
+        game = {tick = 10}
+        defines = {inventory = {character_main = 1, chest = 2, furnace_source = 3, fuel = 4}}
+        source_count, fuel_count, source_slot_used = 5, 0, false
+        local player_inventory = {
+            get_item_count = function() return source_count end,
+            remove = function(stack) source_count = source_count-stack.count; return stack.count end,
+            insert = function(stack) source_count = source_count+stack.count; return stack.count end
+        }
+        fuel_inventory = {
+            get_insertable_count = function() return 5 end,
+            insert = function(stack) fuel_count = fuel_count+stack.count; return stack.count end
+        }
+        furnace_source = {
+            get_insertable_count = function() return 5 end,
+            insert = function(stack) source_slot_used = true; return stack.count end
+        }
+        storage = {agent_characters = {{
+            force = {rockets_launched = 0}, position = {x = 0, y = 0},
+            get_inventory = function() return player_inventory end
+        }}}
+        storage.fair = {actor = function()
+            return {can_reach_entity = function() return true end}
+        end}
+    """)
+    lua.execute(files("jev_factorio").joinpath("lua/factory.lua").read_text())
+    lua.execute("""
+        storage.campaign.entities.furnace = {
+            valid = true, type = "furnace", burner = true, unit_number = 17,
+            position = {x = 0, y = 0},
+            get_inventory = function(kind)
+                if kind == defines.inventory.fuel then return fuel_inventory end
+                return furnace_source
+            end
+        }
+        storage.campaign.transfer('furnace', 'coal', 5, 'fuel-transfer', false)
+    """)
+    assert lua.eval("source_count") == 0
+    assert lua.eval("fuel_count") == 5
+    assert lua.eval("source_slot_used") is False
+    assert lua.eval("storage.campaign.receipts['fuel-transfer'].quantity") == 5
+
+
+def test_lua_furnace_coal_transfer_rejects_remote_fuel_before_mutation():
+    lua = pytest.importorskip("lupa.lua54").LuaRuntime()
+    lua.execute("""
+        game = {tick = 10}
+        defines = {inventory = {character_main = 1, chest = 2, furnace_source = 3, fuel = 4}}
+        source_count, fuel_count = 5, 0
+        local player_inventory = {
+            get_item_count = function() return source_count end,
+            remove = function(stack) source_count = source_count-stack.count; return stack.count end,
+            insert = function(stack) source_count = source_count+stack.count; return stack.count end
+        }
+        fuel_inventory = {
+            get_insertable_count = function() return 5 end,
+            insert = function(stack) fuel_count = fuel_count+stack.count; return stack.count end
+        }
+        storage = {agent_characters = {{
+            force = {rockets_launched = 0}, position = {x = 0, y = 0},
+            get_inventory = function() return player_inventory end
+        }}}
+        storage.fair = {actor = function()
+            return {can_reach_entity = function() return false end}
+        end}
+    """)
+    lua.execute(files("jev_factorio").joinpath("lua/factory.lua").read_text())
+    lua.execute("""
+        storage.campaign.entities.furnace = {
+            valid = true, type = "furnace", burner = true, unit_number = 17,
+            position = {x = 100, y = 100},
+            get_inventory = function() return fuel_inventory end
+        }
+    """)
+    with pytest.raises(Exception, match="out of reach"):
+        lua.execute("storage.campaign.transfer('furnace', 'coal', 5, 'remote-fuel', false)")
+    assert lua.eval("source_count") == 5
+    assert lua.eval("fuel_count") == 0
+    assert lua.eval("storage.campaign.receipts['remote-fuel']") is None
+
+
 def test_lua_transfer_rejects_remote_interaction_before_inventory_mutation():
     lua = pytest.importorskip("lupa.lua54").LuaRuntime()
     lua.execute("""

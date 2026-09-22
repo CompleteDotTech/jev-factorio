@@ -225,6 +225,12 @@ campaign.transfer = function(role, item, quantity, receipt, extracting)
     local function destination_inventory()
         if extracting then
             return agent.get_inventory(defines.inventory.character_main)
+        elseif item == "coal" and machine.burner then
+            -- Furnace source inventories accept smeltable ingredients, not
+            -- burner fuel.  Fuel service plans intentionally use the same
+            -- fair transfer path as every other item, so select the native
+            -- fuel inventory before the furnace-source branch.
+            return machine.get_inventory(defines.inventory.fuel)
         elseif machine.type == "furnace" then
             return machine.get_inventory(defines.inventory.furnace_source)
         elseif machine.type == "lab" then
