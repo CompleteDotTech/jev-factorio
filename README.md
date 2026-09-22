@@ -37,6 +37,27 @@ For a fully offline run, override all provider credentials:
 TYPESAFE_API_KEY= CLOUDFLARE_API_TOKEN= PYTHONPATH=src python -m jev_factorio --backend mock --steps 8 --tick-seconds 0
 ```
 
+## Research logging (opt-in)
+
+`--run-dir` (or `JEV_RUN_DIR`) creates a new exclusive evidence directory with a
+secret-safe manifest, fsynced SHA-256-chained lifecycle events, and a final seal.
+It never reuses an existing directory. The original `--log-file` remains
+independently optional and retains its existing decision JSONL format.
+
+```bash
+python -m jev_factorio --controller hierarchical --backend mock --mock-model \
+  --target bootstrap_mining --steps 40 --tick-seconds 0 \
+  --run-dir runs/research-001 --log-file runs/research-001/decisions.jsonl
+python -m jev_factorio.research_log runs/research-001
+```
+
+This first increment records lifecycle/provenance, not a complete causal action
+trace. A valid seal proves internal consistency, not successful gameplay or
+independent authenticity. See [Research logging](docs/RESEARCH_LOGGING.md) for
+schemas, verification, incomplete runs, redaction and durability limits. Use a
+new directory for each invocation; supervisor directory rotation is not yet
+implemented, so do not export a fixed `JEV_RUN_DIR` to a supervised campaign.
+
 ## Layout
 
 - `src/jev_factorio/state.py` - GameSnapshot + compact Jev-facing state
