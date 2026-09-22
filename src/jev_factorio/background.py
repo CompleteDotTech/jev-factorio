@@ -199,9 +199,12 @@ class BackgroundWorkLoop(HierarchicalLoop):
         job = self._job()
         if job:
             plans = independent_candidates(self.memory.active_goal, snapshot, self.catalog, job)
+            plans = [plan for plan in plans if self.memory.failures.get(plan.id, 0) < 2]
             return plans or [background_wait(self.memory.active_goal, job, snapshot.tick)], ""
         plans, blocker = super()._compile_candidates(snapshot)
         if (plans and plans[0].steps[0].action == "factory_wait"
                 and plans[0].steps[0].effect == "research_progress"):
-            plans = independent_candidates(self.memory.active_goal, snapshot, self.catalog) or plans
+            independent = independent_candidates(self.memory.active_goal, snapshot, self.catalog)
+            plans = [plan for plan in independent
+                     if self.memory.failures.get(plan.id, 0) < 2] or plans
         return [self._tracked_plan(plan, snapshot) for plan in plans], blocker

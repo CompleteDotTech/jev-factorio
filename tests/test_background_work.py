@@ -141,6 +141,34 @@ def test_checkpoint_resume_never_requeues_a_background_craft(tmp_path):
         CampaignMemory.load(tmp_path / "state.json", backend.state.session_id, restored.target)
 
 
+def test_exhausted_independent_work_waits_for_background_completion(tmp_path, monkeypatch):
+    backend = ReceiptBackend()
+    initial = controller(backend, tmp_path)
+    initial.step()
+    loop = BackgroundWorkLoop(
+        backend, policy="deterministic", factory_scheduling="ready-work",
+        target="automation_science", checkpoint=str(tmp_path / "state.json"),
+        resume_controller=True, tick_seconds=0,
+    )
+    candidate = Plan("failed-gather", loop.target, "Independent ore", (
+        Step("factory_gather", "inventory", "iron-ore", 5,
+             parameters={"resource": "iron-ore", "quantity": 5}),
+    ))
+    monkeypatch.setattr("jev_factorio.background.independent_candidates",
+                        lambda *args: [candidate])
+    loop._observe()
+    loop.memory.failures[candidate.id] = 2
+    record = loop.step()
+    assert record["status"] == "running"
+    assert loop.memory.background_job
+    assert all(action != "factory_gather" for action, _ in backend.calls)
+    assert loop.memory.failures[candidate.id] == 2
+    backend.complete()
+    record = loop.step()
+    assert record["status"] == "completed"
+    assert loop.memory.background_job is None
+
+
 def test_lost_post_dispatch_observation_recovers_returned_receipt_without_replay(tmp_path):
     backend = ReceiptBackend()
     backend.fail_observation = 3

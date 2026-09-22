@@ -1076,7 +1076,8 @@ def test_ambiguous_placement_stays_pending_without_absence_proof(
     assert backend.actions == actions_before
 
 
-def test_ambiguous_gather_with_observed_partial_yield_replans_without_dispatching():
+@pytest.mark.parametrize("dispatch", ["prepared", "ambiguous"])
+def test_unacknowledged_gather_with_observed_partial_yield_replans_without_dispatching(dispatch):
     plan = Plan(
         id="factory:factory_gather:wood", goal="rocket_launch", description="gather wood",
         steps=[Step(
@@ -1096,7 +1097,7 @@ def test_ambiguous_gather_with_observed_partial_yield_replans_without_dispatchin
         session_id="test-factory", target="rocket_launch", active_goal="rocket_launch",
         active_plan=plan.to_dict(), pending={
             "started_tick": 10, "polls": 1,
-            "action": "factory_gather", "dispatch": "ambiguous",
+            "action": "factory_gather", "dispatch": dispatch,
         },
         reservations={plan.id: {}}, last_tick=10, status="uncertain",
     )

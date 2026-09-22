@@ -122,7 +122,19 @@ class ReadyWorkPlanner(FactoryPlanner):
         # Only the item whose need produced this extraction may set its batch
         # target. An ancestor recipe can require many outputs but few plates.
         if plan and (plan.steps[0].parameters or {}).get("item") == item:
-            return self._batch_collection(plan, amount)
+            batched = self._batch_collection(plan, amount)
+            if batched.steps[0].action == "factory_wait":
+                missing = math.ceil(amount - self.snapshot.inventory.get(item, 0))
+                for role, machine in sorted(self.entities.items()):
+                    available = machine.get("output", {}).get(item, 0)
+                    if available and role != plan.steps[0].parameters["role"]:
+                        alternative = self._batch_collection(
+                            self._transfer(role, item, min(missing, available), extracting=True),
+                            amount,
+                        )
+                        if alternative.steps[0].action == "factory_extract":
+                            return alternative
+            return batched
         return plan
 
     def candidates(self) -> list[Plan]:
