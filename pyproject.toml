@@ -52,4 +52,4 @@ jev-factorio-dashboard = "jev_factorio.dashboard:cli"
 where = ["src"]
 
 [tool.setuptools.package-data]
-jev_factorio = ["lua/*.lua", "dashboard_assets/*.html", "dashboard_assets/*.css", "dashboard_assets/*.js"]
+jev_factorio = ["lua/*.lua", "dashboard_assets/*.html", "dashboard_assets/*.css", "dashboard_assets/*.js", "dashboard_assets/*.png"]

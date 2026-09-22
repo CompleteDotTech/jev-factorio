@@ -562,13 +562,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._events()
         else:
             names = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
-                     "/styles.css": ("styles.css", "text/css")}
+                     "/styles.css": ("styles.css", "text/css"),
+                     "/factory-steel.png": ("factory-steel.png", "image/png")}
             if path not in names:
                 self._headers(404, "text/plain", 0)
                 return
             name, content_type = names[path]
             raw = (ASSETS / name).read_bytes()
-            self._headers(200, content_type + "; charset=utf-8", len(raw))
+            self._headers(200, content_type + ("; charset=utf-8" if content_type.startswith("text/") else ""), len(raw))
             self.wfile.write(raw)
 
     def _events(self) -> None:
