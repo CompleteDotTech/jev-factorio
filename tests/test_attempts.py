@@ -204,6 +204,9 @@ def test_ambiguous_native_zero_receipt_reconciles_only_with_retained_source(monk
     event = next(event for event in resumed.memory.history
                  if event["kind"] == "zero_effect_transfer_reconciled")
     assert event["requested_quantity"] == 20 and event["transferred_quantity"] == 0
+    reloaded = load(tmp_path / "checkpoint.json")
+    assert reloaded.pending is reloaded.active_plan is reloaded.attempt is None
+    assert reloaded.attempt_outcomes[-1] == outcome
 
 
 @pytest.mark.parametrize("change", ["source_not_retained", "actor_not_bound"])
