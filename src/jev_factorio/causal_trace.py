@@ -203,6 +203,9 @@ class CausalTrace:
         return {"attempt_id": attempt_id, "action_id": action_id,
                 "action_origin": "current_trace" if action_id else "checkpoint_or_external"}
 
+    def release_attempt(self, attempt_id) -> None:
+        self._attempt_actions.pop(attempt_id, None)
+
 
 class TracedClient:
     """Delegate metadata unchanged; record the exact evaluate boundary once."""

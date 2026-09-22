@@ -204,7 +204,13 @@ def attach(loop: Any, writer: EventWriter) -> None:
             self.backend = backend
 
         def __getattr__(self, key):
-            return getattr(self.backend, key)
+            value = getattr(self.backend, key)
+            if key == "execute_traced":
+                def execute_traced(action, parameters, trace):
+                    emit("action", 6, action=action, parameters=parameters)
+                    return measured("dispatch", 6, value, action, parameters, trace)
+                return execute_traced
+            return value
 
         def act(self, action):
             emit("action", 6, action=action)
