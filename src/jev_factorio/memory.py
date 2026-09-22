@@ -8,13 +8,14 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .planning.materials import quantities
+from .telemetry import fingerprint, make_attempt, validate_attempt
 
 
 @dataclass
 class CampaignMemory:
     session_id: str
     target: str
-    version: int = 1
+    version: int = 2
     active_goal: str | None = None
     completed_goals: dict[str, int] = field(default_factory=dict)
     active_plan: dict | None = None
@@ -27,6 +28,8 @@ class CampaignMemory:
     status: str = "running"
     reason: str = ""
     stalled_decisions: int = 0
+    attempt: dict | None = None
+    attempt_outcomes: list[dict] = field(default_factory=list)
 
     def event(self, kind: str, **details) -> None:
         self.history.append({"kind": kind, **details})
@@ -68,8 +71,14 @@ class CampaignMemory:
                 raise ValueError(f"Invalid numeric constant in checkpoint: {value}")
 
             data = json.loads(path.read_text(encoding="utf-8"), parse_constant=invalid_constant)
+            if not isinstance(data, dict) or type(data.get("version")) is not int:
+                raise ValueError("Invalid checkpoint version")
+            if data["version"] == 1 and {"attempt", "attempt_outcomes"} & data.keys():
+                raise ValueError("Legacy checkpoint has unexpected attempt fields")
+            if data["version"] == 2 and not {"attempt", "attempt_outcomes"} <= data.keys():
+                raise ValueError("Version 2 checkpoint is missing attempt fields")
             memory = cls(**data)
-            if (memory.version != 1 or memory.session_id != session_id
+            if (memory.version not in {1, 2} or memory.session_id != session_id
                     or memory.target != target or not session_id):
                 raise ValueError("Checkpoint version, session, or target mismatch")
             if (type(memory.last_tick) is not int or type(memory.step_index) is not int
@@ -108,6 +117,53 @@ class CampaignMemory:
                         or pending["action"] != plan.steps[memory.step_index].action
                         or pending["dispatch"] not in {"prepared", "ambiguous", "returned"}):
                     raise ValueError("Invalid pending action in checkpoint")
+            # Migration changes metadata only, never the pending command or receipts.
+            # Loading (including offline diagnostics) does not write the source file.
+            if memory.version == 1:
+                memory.version = 2
+                if memory.pending:
+                    memory.attempt = make_attempt(session_id, target, memory.active_plan,
+                                                  memory.step_index, memory.pending)
+            if (memory.pending is None) != (memory.attempt is None):
+                raise ValueError("Pending action and attempt identity must coexist")
+            if memory.attempt is not None:
+                validate_attempt(memory.attempt)
+                attempt = memory.attempt
+                step = memory.active_plan["steps"][memory.step_index]
+                if (attempt["action"] != memory.pending["action"]
+                        or attempt["started_tick"] != memory.pending["started_tick"]
+                        or attempt["plan_id"] != plan.id or attempt["step_index"] != memory.step_index
+                        or attempt["step_sha256"] != fingerprint(step)
+                        or attempt["receipt"] != (step.get("parameters") or {}).get("receipt")):
+                    raise ValueError("Attempt does not match the pending operation")
+            if not isinstance(memory.attempt_outcomes, list) or len(memory.attempt_outcomes) > 64:
+                raise ValueError("Invalid attempt outcome history")
+            seen = {memory.attempt["id"]} if memory.attempt else set()
+            for outcome in memory.attempt_outcomes:
+                validate_attempt(outcome, finished=True)
+                if outcome["id"] in seen or outcome["finished_tick"] > memory.last_tick:
+                    raise ValueError("Duplicate or future attempt outcome")
+                seen.add(outcome["id"])
             return memory
         except (TypeError, KeyError, AttributeError, json.JSONDecodeError) as error:
             raise ValueError("Invalid controller checkpoint; refusing to reset it") from error
+
+
+def load_checkpoint(path: Path, session_id: str, target: str) -> CampaignMemory:
+    from .controller import HierarchicalLoop
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("Invalid controller checkpoint")
+    loop_type = HierarchicalLoop
+    if {"background_schema", "background_job", "background_attempt"} & data.keys():
+        if not {"background_schema", "background_job"} <= data.keys():
+            raise ValueError("Incomplete background checkpoint extension")
+        from .background import BackgroundWorkLoop
+        loop_type = BackgroundWorkLoop
+    if {"input_routes_schema", "input_commitments"} & data.keys():
+        if not {"input_routes_schema", "input_commitments"} <= data.keys():
+            raise ValueError("Incomplete input-route checkpoint extension")
+        from .input_controller import input_loop_type
+        loop_type = input_loop_type(loop_type)
+    return loop_type.memory_type.load(path, session_id, target)

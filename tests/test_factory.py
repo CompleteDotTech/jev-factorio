@@ -13,6 +13,7 @@ from jev_factorio.controller import HierarchicalLoop
 from jev_factorio.backends.native_factory import NativeFactory
 from jev_factorio.jev_client import MockJevClient
 from jev_factorio.memory import CampaignMemory
+from jev_factorio.telemetry import make_attempt
 
 
 def recipe(name, ingredients, category="crafting", enabled=True, product=None):
@@ -1086,13 +1087,7 @@ def test_unacknowledged_gather_with_observed_partial_yield_replans_without_dispa
         )],
     )
     state = snapshot(inventory={"wood": 8})
-    controller = object.__new__(HierarchicalLoop)
-    controller.target = "rocket_launch"
-    controller.policy = "deterministic"
-    controller.jev = None
-    controller.log_file = None
-    controller.checkpoint = None
-    controller._decision = None
+    controller = HierarchicalLoop(SimpleNamespace(), policy="deterministic", tick_seconds=0)
     controller.memory = CampaignMemory(
         session_id="test-factory", target="rocket_launch", active_goal="rocket_launch",
         active_plan=plan.to_dict(), pending={
@@ -1102,6 +1097,10 @@ def test_unacknowledged_gather_with_observed_partial_yield_replans_without_dispa
         reservations={plan.id: {}}, last_tick=10, status="uncertain",
     )
 
+    controller.memory.attempt = make_attempt(
+        controller.memory.session_id, controller.target, controller.memory.active_plan,
+        0, controller.memory.pending, process_id=controller._process_id,
+    )
     record = controller._verify_pending(state)
 
     assert record["action"] == "reconcile"
@@ -1136,6 +1135,7 @@ def test_ambiguous_connection_reconciliation_fails_closed(change):
     }
     state.factory["force_entity_counts"] = {"pipe": 0}
     controller = object.__new__(HierarchicalLoop)
+    controller.provenance = {}
     controller.memory = CampaignMemory(
         session_id="test-factory", target="rocket_launch", active_goal="rocket_launch",
         active_plan=plan.to_dict(), pending={
@@ -1145,6 +1145,10 @@ def test_ambiguous_connection_reconciliation_fails_closed(change):
         reservations={plan.id: {"pipe": 41}}, last_tick=10, status="uncertain",
     )
 
+    controller.memory.attempt = make_attempt(
+        controller.memory.session_id, controller.memory.target, controller.memory.active_plan,
+        0, controller.memory.pending,
+    )
     assert controller._absent_ambiguous_connection(plan, plan.steps[0], state)
     if change == "missing_counts":
         state.factory.pop("force_entity_counts")
@@ -1202,6 +1206,10 @@ def test_ambiguous_first_connection_allows_retained_surplus_stock():
         reservations={plan.id: {"pipe": 12}}, last_tick=10, status="uncertain",
     )
 
+    controller.memory.attempt = make_attempt(
+        controller.memory.session_id, controller.memory.target, controller.memory.active_plan,
+        0, controller.memory.pending,
+    )
     assert controller._absent_ambiguous_connection(plan, plan.steps[0], state)
 
 
@@ -1241,6 +1249,10 @@ def test_ambiguous_connection_cannot_infer_connector_age_from_fluid(remaining_st
         reservations={plan.id: {"pipe": 41}}, last_tick=10, status="uncertain",
     )
 
+    controller.memory.attempt = make_attempt(
+        controller.memory.session_id, controller.memory.target, controller.memory.active_plan,
+        0, controller.memory.pending,
+    )
     assert not controller._absent_ambiguous_connection(plan, plan.steps[0], state)
 
     state.factory["connectors"]["pipe"].append({
@@ -1269,13 +1281,7 @@ def test_ambiguous_connection_reconciles_without_dispatching():
         "utility:boiler": machine("boiler"),
     }
     state.factory["force_entity_counts"] = {"pipe": 0}
-    controller = object.__new__(HierarchicalLoop)
-    controller.target = "rocket_launch"
-    controller.policy = "deterministic"
-    controller.jev = None
-    controller.log_file = None
-    controller.checkpoint = None
-    controller._decision = None
+    controller = HierarchicalLoop(SimpleNamespace(), policy="deterministic", tick_seconds=0)
     controller.memory = CampaignMemory(
         session_id="test-factory", target="rocket_launch", active_goal="rocket_launch",
         active_plan=plan.to_dict(), pending={
@@ -1285,6 +1291,10 @@ def test_ambiguous_connection_reconciles_without_dispatching():
         reservations={plan.id: {"pipe": 41}}, last_tick=10, status="uncertain",
     )
 
+    controller.memory.attempt = make_attempt(
+        controller.memory.session_id, controller.target, controller.memory.active_plan,
+        0, controller.memory.pending, process_id=controller._process_id,
+    )
     record = controller._verify_pending(state)
 
     assert record["action"] == "reconcile"

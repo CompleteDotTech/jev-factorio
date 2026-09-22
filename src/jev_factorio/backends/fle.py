@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from ..planning.catalog import Catalog
 from ..state import GameSnapshot
+from ..telemetry import Trace
 
 
 class SessionRcon:
@@ -55,6 +56,12 @@ class FleBackend:
         if self._factory is None:
             raise RuntimeError("Native factory capabilities have not been enabled")
         return self._factory.execute(action, parameters)
+
+    def execute_traced(self, action: str, parameters: dict, trace: Trace) -> str:
+        """Same execution contract, with optional phase evidence for the controller."""
+        if self._factory is None:
+            raise RuntimeError("Native factory capabilities have not been enabled")
+        return self._factory.execute(action, parameters, trace=trace)
 
     def native_mine_target(self, resource: str):
         """Return a fresh, cursor-selectable native raw-resource target.

@@ -51,7 +51,9 @@ python -m jev_factorio --controller hierarchical --backend mock --mock-model \
 python -m jev_factorio.research_log runs/research-001
 ```
 
-This first increment records lifecycle/provenance, not a complete causal action
+Controller call boundaries additionally record causal observations, decisions,
+actions, verification, and attempt joins; see [causal logging](docs/CAUSAL_LOGGING.md).
+This evidence is not a complete native action
 trace. A valid seal proves internal consistency, not successful gameplay or
 independent authenticity. See [Research logging](docs/RESEARCH_LOGGING.md) for
 schemas, verification, incomplete runs, redaction and durability limits. Use a

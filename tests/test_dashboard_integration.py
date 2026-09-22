@@ -1,6 +1,8 @@
 """Use the real repository controller in CI; no provider or Factorio calls."""
 import copy
 import json
+from itertools import count
+from uuid import UUID
 
 import pytest
 import requests
@@ -41,10 +43,16 @@ class TrackedModel(MockJevClient):
 
 @pytest.mark.parametrize("policy", ["deterministic", "jev", "hybrid"])
 @pytest.mark.parametrize("mode", ["normal", "timeout", "malformed"])
-def test_real_controller_equivalence_and_producer_consumer(tmp_path, capsys, policy, mode):
+def test_real_controller_equivalence_and_producer_consumer(tmp_path, capsys, monkeypatch, policy, mode):
+    monkeypatch.setattr("jev_factorio.controller.utc_now", lambda: "2026-09-22T00:00:00+00:00")
+    monkeypatch.setattr("jev_factorio.telemetry.utc_now", lambda: "2026-09-22T00:00:00+00:00")
+    monkeypatch.setattr("jev_factorio.telemetry.time.perf_counter", lambda: 1.0)
     results = []
     path = tmp_path / "events.jsonl"
     for instrumented in (False, True):
+        identities = count(1)
+        monkeypatch.setattr("jev_factorio.controller.uuid4", lambda: UUID(int=next(identities)))
+        monkeypatch.setattr("jev_factorio.telemetry.uuid4", lambda: UUID(int=next(identities)))
         backend, model = TrackedBackend(), TrackedModel(mode)
         checkpoint = tmp_path / f"checkpoint-{instrumented}.json"
         log = tmp_path / f"legacy-{instrumented}.jsonl"

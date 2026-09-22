@@ -19,9 +19,12 @@ from pathlib import Path
 
 import requests
 
+from .causal_trace import CausalTrace, traced_step
+from .research_log import EventSink, validate_output_paths
 from .jev_client import make_client
 from .questions import build_questions
 from .state import GameSnapshot
+from .provenance import gameplay_context
 
 
 def fallback_policy(snapshot: GameSnapshot) -> str:
@@ -46,19 +49,27 @@ def fallback_policy(snapshot: GameSnapshot) -> str:
 
 class AgentLoop:
     def __init__(self, backend, jev=None, confidence_floor: float = 0.45,
-                 tick_seconds: float = 2.0, log_file: str | None = None):
+                 tick_seconds: float = 2.0, log_file: str | None = None, *,
+                 research_log: EventSink | None = None):
+        validate_output_paths(research_log, log_file)
+        self.provenance = gameplay_context()
         self.backend = backend
         self.jev = jev or make_client()
+        self._trace = CausalTrace(research_log, "flat", self.jev, provenance=self.provenance)
+        self._decision_client = self._trace.client(self.jev)
         self.confidence_floor = confidence_floor
         self.tick_seconds = tick_seconds
         self.log_file = Path(log_file) if log_file else None
         if self.log_file:
             self.log_file.parent.mkdir(parents=True, exist_ok=True)
 
+    @traced_step
     def step(self) -> dict:
-        snapshot = self.backend.observe()
-        questions = build_questions(snapshot)
-        answers = self.jev.evaluate(snapshot.for_jev(), questions)
+        snapshot = self._trace.observe(self.backend, "before_decision")
+        questions = self._trace.call(
+            "candidate_set_created", lambda: build_questions(snapshot),
+            result=lambda batch: {"candidates": batch["next_action"]["criteria"], "questions": batch})
+        answers = self._decision_client.evaluate(snapshot.for_jev(), questions)
 
         action_ans = answers["next_action"]
         candidates = questions["next_action"]["criteria"]
@@ -71,9 +82,17 @@ class AgentLoop:
         if action not in candidates:
             action = "idle"
 
-        outcome = self.backend.act(action)
-        after = self.backend.observe()
+        self._trace.emit("decision", {"action": action, "source": source,
+                                      "requested_action": action_ans.get("choice"),
+                                      "confidence": action_ans["confidence"],
+                                      "confidence_floor": self.confidence_floor,
+                                      "model_called": True})
+        outcome = self._trace.dispatch(lambda: self.backend.act(action), action, role="flat")
+        after = self._trace.observe(self.backend, "after_action")
+        self._trace.emit("verification", {"phase": "flat", "verified": None,
+                                          "reason": "flat_controller_has_no_postcondition_predicate"})
         record = {
+            **self.provenance,
             "tick": snapshot.tick, "goal": answers["goal"]["choice"],
             "action": action, "source": source,
             "confidence": action_ans["confidence"],

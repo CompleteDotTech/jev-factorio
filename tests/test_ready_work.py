@@ -11,6 +11,7 @@ from jev_factorio.controller import HierarchicalLoop
 from jev_factorio.memory import CampaignMemory
 from jev_factorio.planning.ready_work import ReadyWorkPlanner, compile_ready_factory
 from jev_factorio.skills import Plan, Step
+from jev_factorio.telemetry import make_attempt
 from test_factory import catalog, machine, recipe, snapshot
 from importlib.resources import files
 
@@ -197,6 +198,10 @@ def pending_loop(state, data, scheduling="ready-work", dispatch="returned", effe
     loop.memory.active_plan = plan.to_dict()
     loop.memory.pending = {"started_tick": state.tick, "polls": 0,
                            "action": step.action, "dispatch": dispatch}
+    loop.memory.attempt = make_attempt(
+        loop.memory.session_id, loop.target, loop.memory.active_plan,
+        0, loop.memory.pending, process_id=loop._process_id,
+    )
     return loop
 
 
