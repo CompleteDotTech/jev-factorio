@@ -7,20 +7,27 @@ action. Every report includes `offline: true`, `replay_authorized: false`,
 
 ## Integration status
 
-The implementation base is `47a07010d5ff4ba3401657f23631564cf69b09ad`. That base
-emits legacy flat and hierarchical JSONL; it does **not** contain the proposed
-research event writer or causal instrumentation from the earlier logging plan.
-
-This change therefore has two explicit paths:
+There are three explicitly selectable formats (`--format`, default `auto`):
 
 * Read existing records now, preserve their evidence, and report the information
   that was never captured. A legacy trace cannot become a complete research
   record retroactively.
-* Supply an explicit, synthetic-fixture-tested adapter for
-  `jev-factorio.event.v1` below. This is the proposed producer/consumer contract,
-  not a claim that an unmerged writer already emits it. Align the eventual
-  writer's exact schema and hash encoding before declaring live integration
-  complete; do not add heuristic aliases for unknown versions.
+* `research-v1` reads canonical PR5 writer output and PR9 causal payloads.
+  It verifies the original ASCII canonical bytes, manifest binding, chain,
+  lifecycle, and integrity seal before constructing decision views. Original
+  events and hashes remain source evidence; views are never rehashed as evidence.
+  Missing manifest, seal, causal identity, postcondition verdict, or candidate-set
+  reference remains an explicit gap. Known dangling action/model/observation
+  references fail the audit. A sealed run does not imply complete causal evidence.
+* `proposed-v1` retains the synthetic fixture contract documented below. Its
+  segment envelope and UTF-8 hash encoding are not the canonical producer format.
+  Automatic selection distinguishes the producer's explicit `schema_version`;
+  it never silently renames payload fields or synthesizes unavailable references.
+
+Integration remains draft until the final canonical writer and controller
+instrumentation are exercised together in the final merged candidate. The
+generated writer/trace tests verify offline consumption; they are not native
+gameplay or full controller integration acceptance.
 
 No gameplay, supervisor, checkpoint, provider, or environment configuration is
 changed. The existing evaluation command remains untouched. The separate
@@ -36,8 +43,8 @@ After installation (or with `PYTHONPATH=src`):
 # A self-contained synthetic example, never a native Factorio result.
 python -m jev_factorio.replay tests/fixtures/replay/event-v1
 
-# A research run directory: reads exactly manifest.json and events.jsonl.
-python -m jev_factorio.replay runs/example --output replay-report.json
+# A research run directory also reads the optional integrity.json seal.
+python -m jev_factorio.replay runs/example --format research-v1 --output replay-report.json
 
 # Historical gameplay records are explicitly incomplete evidence.
 python -m jev_factorio.replay gameplay.jsonl --allow-incomplete

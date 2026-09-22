@@ -166,6 +166,11 @@ def _read(path: Path, report: ReplayReport, max_line_bytes: int,
                     break
                 try:
                     row = _decode(raw)
+                    if row.get("schema") == EVENT_SCHEMA and "schema_version" in row:
+                        canonical = json.dumps(row, sort_keys=True, separators=(",", ":"),
+                                               ensure_ascii=True, allow_nan=False).encode("ascii") + b"\n"
+                        if raw != canonical:
+                            raise ReplayInputError("Noncanonical producer record")
                 except ReplayInputError:
                     report.add("error", "invalid_json", "Invalid JSONL record; replay stopped", line)
                     consumed_all = False
@@ -669,7 +674,7 @@ def _legacy(rows: list[tuple[int, dict]], report: ReplayReport) -> None:
 
 def replay_log(path: str | Path, *, expected_head: str | None = None,
                max_line_bytes: int = MAX_LINE_BYTES, max_input_bytes: int = MAX_INPUT_BYTES,
-               max_events: int = MAX_EVENTS) -> ReplayReport:
+               max_events: int = MAX_EVENTS, format: str = "auto") -> ReplayReport:
     """Reconstruct captured evidence without executing or importing agent code.
 
 A directory means exactly events.jsonl plus optional manifest.json. Standalone
@@ -678,11 +683,24 @@ truth or authorship. Missing evidence remains unknown and appears as a gap.
 """
     if any(type(value) is not int or value < 1 for value in (max_line_bytes, max_input_bytes, max_events)):
         raise ReplayInputError("Input limits must be positive integers")
+    if format not in {"auto", "research-v1", "proposed-v1", "legacy"}:
+        raise ReplayInputError("Unsupported replay format")
     if expected_head is not None and (not isinstance(expected_head, str) or not _HASH.fullmatch(expected_head)):
         raise ReplayInputError("Expected head must be a sha256-prefixed lowercase digest")
     source = Path(path)
     report = ReplayReport()
+    seal = None
     if source.is_dir():
+        seal_path = source / "integrity.json"
+        if seal_path.exists():
+            with seal_path.open("rb") as stream:
+                raw = stream.read(min(max_line_bytes, 1024 * 1024) + 1)
+            if len(raw) > min(max_line_bytes, 1024 * 1024):
+                raise ReplayInputError("Integrity seal exceeds the supported limit")
+            seal = _decode(raw)
+            if raw != json.dumps(seal, sort_keys=True, separators=(",", ":"),
+                                 ensure_ascii=True, allow_nan=False).encode("ascii") + b"\n":
+                report.add("error", "noncanonical_seal", "Producer seal bytes are not canonical")
         manifest_path = source / "manifest.json"
         if manifest_path.exists():
             try:
@@ -691,11 +709,43 @@ truth or authorship. Missing evidence remains unknown and appears as a gap.
                 if len(raw) > min(max_line_bytes, 1024 * 1024):
                     raise ReplayInputError("Manifest exceeds the supported limit")
                 report.manifest = _decode(raw)
+                if report.manifest.get("schema") == "jev-factorio.manifest.v1":
+                    if raw != json.dumps(report.manifest, sort_keys=True, separators=(",", ":"),
+                                         ensure_ascii=True, allow_nan=False).encode("ascii") + b"\n":
+                        report.add("error", "noncanonical_manifest", "Producer manifest bytes are not canonical")
             except OSError as error:
                 raise ReplayInputError("Cannot read the run manifest") from error
         source = source / "events.jsonl"
     rows = _read(source, report, max_line_bytes, max_input_bytes, max_events)
+    actual = rows and rows[0][1].get("schema") == EVENT_SCHEMA and "schema_version" in rows[0][1]
+    if format == "research-v1" or (format == "auto" and actual):
+        from .replay_source import verify_source
+        from .replay_causal import audit_producer
+
+        report.format = "research-v1"
+        report.events = [{"line": line, **event} for line, event in rows]
+        report.run_id = rows[0][1].get("run_id") if rows else None
+        try:
+            checked = verify_source(rows, report.manifest, seal, expected_head)
+        except (ValueError, TypeError, RecursionError):
+            report.add("error", "invalid_source_evidence", "Original producer envelope, chain, manifest, or seal is invalid")
+            report.integrity["status"] = "invalid"
+            return report
+        report.integrity.update({key: value for key, value in checked.items() if key != "gaps"})
+        report.integrity["status"] = "verified_source" if checked["complete"] else "incomplete_source"
+        for gap in checked["gaps"]:
+            report.add("gap", gap, "Original producer evidence is incomplete")
+        if report.status == "invalid":
+            return report
+        audit_producer([event for _, event in rows], report)
+        return report
+    if format == "legacy" and rows and ("schema" in rows[0][1] or "event_type" in rows[0][1]):
+        report.add("error", "mixed_format", "Input does not match the selected legacy format")
+        return report
     if rows and "schema" not in rows[0][1] and "event_type" not in rows[0][1]:
+        if format == "proposed-v1":
+            report.add("error", "mixed_format", "Input does not match the selected proposed format")
+            return report
         _legacy(rows, report)
         if expected_head is not None:
             report.add("error", "unverifiable_head", "Legacy logs cannot satisfy a chain-head assertion")
@@ -734,12 +784,13 @@ def cli(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-input-bytes", type=int, default=MAX_INPUT_BYTES)
     parser.add_argument("--max-events", type=int, default=MAX_EVENTS)
     parser.add_argument("--expected-head", help="Externally retained sha256:<digest> chain head")
+    parser.add_argument("--format", choices=("auto", "research-v1", "proposed-v1", "legacy"), default="auto")
     parser.add_argument("--allow-incomplete", action="store_true", help="Exit zero for gaps only; never masks invalid evidence")
     args = parser.parse_args(argv)
     try:
         report = replay_log(args.path, expected_head=args.expected_head,
                             max_line_bytes=args.max_line_bytes,
-                            max_input_bytes=args.max_input_bytes, max_events=args.max_events)
+                            max_input_bytes=args.max_input_bytes, max_events=args.max_events, format=args.format)
         result = json.dumps(report.to_dict(), indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n"
         if args.output:
             # Exclusive creation protects inputs, checkpoints, symlinks and previous reports.
