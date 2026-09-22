@@ -310,6 +310,7 @@ def test_fle_output_telemetry_counts_only_connected_chest(monkeypatch):
         get_entities=lambda prototypes: entities,
     )
     backend = FleBackend()
+    backend._fair = types.SimpleNamespace(call=lambda function: {})
     backend._instance = types.SimpleNamespace(
         namespace=tools, rcon_client=types.SimpleNamespace(
             send_command=lambda command: '{"tick":10,"session_id":"test","position":[0,0]}'

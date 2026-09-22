@@ -1,0 +1,38 @@
+flowchart TD
+
+subgraph REPAIR["8. Automatic Codex repair"]
+    INCIDENT["Stop and reap gameplay process<br/>Capture immutable incident checkpoint<br/>and source baseline"]
+    REPAIR_TIME{"Time remains before original cutoff?"}
+    CODEX["Launch Codex repair agent<br/>Logs, source, checkpoint and native evidence<br/>Bounded repair attempt: up to 30 minutes"]
+    DIAGNOSE["Identify root cause<br/>Preserve session, pending semantics,<br/>failure history and fairness constraints"]
+    CHANGE_TYPE{"Code change needed?"}
+    OPERATIONAL["Evidence-backed operational reconciliation<br/>Tracked source and HEAD unchanged"]
+    IMPLEMENT["Implement focused fix<br/>Add regression tests<br/>Run focused and full tests"]
+    REVIEW["Independent exact-head source review"]
+    PUBLISH["Commit and push repair branch<br/>Open or update pull request"]
+    CI{"Required checks green<br/>and exact-head review approved?"}
+    MERGE["Merge without bypass<br/>Synchronize local main,<br/>origin/main and fork/main"]
+    RESULT["Write structured repair result<br/>With concrete evidence"]
+    ACCEPT["Supervisor independently verifies result<br/>Session and pending-state preservation<br/>Failure counts not reduced<br/>Code identity, clean worktree, review,<br/>checks, merge, remotes and tests"]
+    ACCEPTED{"Repair accepted?"}
+    RETRY["Keep gameplay stopped<br/>Record rejection or blocker<br/>Back off, up to 15 minutes"]
+    READY["Clear repair-required gate<br/>Keep original world, checkpoint and deadline"]
+
+    INCIDENT --> REPAIR_TIME
+    REPAIR_TIME -->|No| STOP
+    REPAIR_TIME -->|Yes| CODEX --> DIAGNOSE --> CHANGE_TYPE
+    CHANGE_TYPE -->|No| OPERATIONAL --> RESULT
+    CHANGE_TYPE -->|Yes| IMPLEMENT --> REVIEW --> PUBLISH --> CI
+    CI -->|No| IMPLEMENT
+    CI -->|Yes| MERGE --> RESULT
+    RESULT --> ACCEPT --> ACCEPTED
+    CODEX -->|Timeout or failed attempt| RETRY
+    ACCEPTED -->|No| RETRY --> REPAIR_TIME
+    ACCEPTED -->|Yes| READY --> DEADLINE
+end
+
+
+    DEADLINE{"Deadline reached<br/>or stop requested?"}
+    STOP["Stop and reap owned processes<br/>Preserve world and checkpoint"]
+classDef continuation fill:#fff7ed,stroke:#c2410c,stroke-dasharray:5 4;
+class DEADLINE,STOP continuation;

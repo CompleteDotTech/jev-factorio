@@ -19,7 +19,8 @@ native verifier. No command fields or receipt generation rules change.
 
 The original four-field `pending` object is unchanged. New `attempt` metadata
 is stored alongside it, preserving the supervisor's comparisons of pending
-intent, active plans, steps, and reservations. A pending operation must have a
+intent, active plans, steps, reservations, and attempt identity. Repair also
+preserves the recorded attempt outcomes. A pending operation must have a
 matching attempt in a version-2 checkpoint. Invalid or inconsistent metadata
 fails closed; there is no fallback to a new world or an empty checkpoint.
 
@@ -42,8 +43,10 @@ Diagnostic histories are separate from the history sent to Jev.
 
 Per-iteration phase records distinguish observation, planning, selection,
 fresh pre-dispatch observation, dispatch, post-dispatch observation, and
-verification. Native insert/extract operations additionally trace entity lookup,
-approach, and the transfer RPC. `FleBackend.execute_traced` forwards diagnostics
+verification. Native insert/extract operations additionally trace the existing
+fair role approach and transfer RPC. Optional crafting, output-buffer and
+input-route adapters forward diagnostics and trace their applicable preparation,
+approach, and RPC stages. `FleBackend.execute_traced` forwards diagnostics
 to the existing native execution method. Backends without that optional method
 still use their original `execute` contract and receive only outer-stage timing.
 
@@ -68,6 +71,14 @@ not an operating-system PID or proof of supervisor ownership.
 Extra checkpoint writes have an unmeasured overhead. This increment measures
 execution; it does not claim to make it faster. Existing write-ahead and bounded
 uncertainty behavior is preserved if a diagnostic write fails.
+A failed diagnostic write during exception handling preserves the original
+operation exception, including `KeyboardInterrupt` and `SystemExit`.
+
+Background crafting retains a separate durable attempt until observed completion.
+Acceptance does not count as verification, and completion does not replace a
+concurrent foreground attempt. Passive waits released for ready work finish as
+`wait_replanned`. See [background checkpoint compatibility](BACKGROUND_WORK.md)
+for legacy jobs with unknown attempt provenance.
 
 ## Evaluation
 

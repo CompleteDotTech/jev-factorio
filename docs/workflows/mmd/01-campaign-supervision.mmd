@@ -1,0 +1,33 @@
+flowchart TD
+
+subgraph SUP["1. Campaign supervision"]
+    START["Start or resume campaign"]
+    LOCK["Acquire exclusive supervisor lock"]
+    LOAD["Load session, checkpoint, incident state<br/>and original 12-hour deadline"]
+    DEADLINE{"Deadline reached<br/>or stop requested?"}
+    STOP["Stop and reap owned processes<br/>Preserve world and checkpoint"]
+    REPAIR_REQUIRED{"Unresolved repair incident?"}
+    LAUNCH["Launch hierarchical controller<br/>Same world and session<br/>Hybrid policy · Jev 1.13.0"]
+    WATCH["Monitor process and checkpoint<br/>Poll every 5 seconds"]
+    HEALTH{"Controller state?"}
+    HEARTBEAT{"Checkpoint unchanged<br/>for 600 seconds?"}
+    SUCCESS["Verified campaign completion<br/>Stop gameplay controller"]
+
+    START --> LOCK --> LOAD --> DEADLINE
+    DEADLINE -->|Yes| STOP
+    DEADLINE -->|No| REPAIR_REQUIRED
+    REPAIR_REQUIRED -->|No| LAUNCH
+    LAUNCH --> WATCH --> HEALTH
+    HEALTH -->|Running| HEARTBEAT
+    HEARTBEAT -->|No| DEADLINE
+    HEARTBEAT -->|Yes| INCIDENT
+    HEALTH -->|Completed| SUCCESS
+    HEALTH -->|Blocked or uncertain| INCIDENT
+    HEALTH -->|Exited or invalid checkpoint| INCIDENT
+    REPAIR_REQUIRED -->|Yes| INCIDENT
+end
+
+
+    INCIDENT["Stop and reap gameplay process<br/>Capture immutable incident checkpoint<br/>and source baseline"]
+classDef continuation fill:#fff7ed,stroke:#c2410c,stroke-dasharray:5 4;
+class INCIDENT continuation;

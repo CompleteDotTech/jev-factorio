@@ -246,10 +246,26 @@ Preserve this exact session and
 checkpoint. Never clear ambiguous pending actions to enable a retry; reconcile
 against observed game evidence and preserve the write-ahead safety contract.
 Inspect logs and source, fix the root cause, add focused tests and run them.
+Complete future bug fixes inside this repair loop; a diagnosis, proposal, or
+unpublished patch is not a completed code repair.
+Fairness is a permanent acceptance requirement for every repair: actual walking,
+normal mining, standard interaction reach, and 1x game speed.
+Never restore teleportation or fast movement/mining bypasses, remote interaction
+beyond standard reach, scripted harvest or inventory grants, elapsed-time-only
+simulation of walking/mining, or game/player speed changes.
+Fix failures in the fair execution path rather than bypassing these requirements.
+Add focused regression tests for affected fairness behavior and require the
+independent exact-head review to inspect it. Record concrete source, test, and
+available native observation evidence, distinguishing mock tests from native proof.
+Do not report repaired or permit resume with a fairness regression or an
+unresolved fairness concern; report blocked with the missing evidence instead.
 You are authorized to make focused commits, push a repair branch, open a PR,
 and merge only after required checks pass and independent exact-head source
 review approves. Synchronize origin and fork after merge. Never bypass checks,
 force-push, expose credentials, or claim success from dispatch acknowledgement.
+Complete fix, tests, independent review, publication/merge, and synchronization
+before reporting a code repair accepted; the supervisor alone resumes gameplay,
+within the original cutoff and with the original session and pending identity.
 If any acceptance requirement cannot be completed, report blocked.
 Write a JSON object to {result} with these fields:
 status ("repaired" or "blocked"), kind ("code" or "operational"),
@@ -397,9 +413,11 @@ Only report repaired when every acceptance requirement is verified.
                 return False
             if previous.get("pending"):
                 if any(current.get(key) != previous.get(key) for key in (
-                    "pending", "active_plan", "step_index", "reservations"
+                    "pending", "active_plan", "step_index", "reservations", "attempt"
                 )):
                     return False
+            if current.get("attempt_outcomes") != previous.get("attempt_outcomes"):
+                return False
             if any(current.get("failures", {}).get(key, 0) < count
                    for key, count in previous.get("failures", {}).items()):
                 return False

@@ -1,0 +1,41 @@
+"""Opt-in native-factory decorator; all ordinary actions retain their adapter."""
+from __future__ import annotations
+
+from importlib.resources import files
+
+from ..factory_contract import validate_command
+from ..telemetry import Trace, phase
+
+
+class CraftJobFactory:
+    def __init__(self, native) -> None:
+        self.native = native
+        native.command(files("jev_factorio").joinpath("lua/craft_jobs.lua").read_text())
+
+    def __getattr__(self, name):
+        return getattr(self.native, name)
+
+    def observe(self, snapshot):
+        snapshot = self.native.observe(snapshot)
+        evidence = snapshot.factory.pop("craft_job_inventory", None)
+        if not isinstance(evidence, dict) or evidence.get("tick") != snapshot.tick:
+            raise ValueError("Missing atomic crafting inventory observation")
+        inventory = evidence.get("items")
+        if (not isinstance(inventory, dict) or len(inventory) > 4096
+                or any(not isinstance(item, str) or not item or len(item) > 128
+                       or type(amount) is not int or amount < 0
+                       for item, amount in inventory.items())):
+            raise ValueError("Invalid atomic crafting inventory observation")
+        snapshot.inventory = dict(inventory)
+        return snapshot
+
+    def execute(self, action: str, parameters: dict, *, trace: Trace | None = None) -> str:
+        if action != "factory_craft_job":
+            if trace is None:
+                return self.native.execute(action, parameters)
+            return self.native.execute(action, parameters, trace=trace)
+        validate_command(action, parameters)
+        with phase("transfer_rpc", trace):
+            self.native.call("begin_craft_job", parameters["receipt"],
+                             parameters["recipe"], parameters["batches"])
+        return "Native craft request returned; receipt and output require observation"

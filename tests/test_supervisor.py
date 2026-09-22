@@ -72,6 +72,47 @@ def test_resume_command_preserves_world_and_controller(supervisor):
     assert command[command.index("--target") + 1] == "rocket_launch"
 
 
+def test_repair_prompt_preserves_fairness_on_every_attempt(supervisor, tmp_path):
+    for attempt in (1, 2):
+        supervisor.state["attempt"] = attempt
+        prompt = supervisor.repair_prompt("execution_failed", tmp_path / "result.json")
+        for requirement in (
+            "actual walking",
+            "normal mining",
+            "standard interaction reach",
+            "1x game speed",
+            "Never restore teleportation",
+            "fast movement/mining bypasses",
+            "remote interaction\nbeyond standard reach",
+            "scripted harvest or inventory grants",
+            "elapsed-time-only\nsimulation of walking/mining",
+            "game/player speed changes",
+            "focused regression tests for affected fairness behavior",
+            "independent exact-head review to inspect it",
+            "distinguishing mock tests from native proof",
+            "Do not report repaired or permit resume with a fairness regression",
+            "report blocked with the missing evidence",
+        ):
+            assert requirement in prompt
+
+
+def test_repair_prompt_requires_completed_fixes_and_preserves_resume_identity(supervisor, tmp_path):
+    prompt = supervisor.repair_prompt("execution_failed", tmp_path / "result.json")
+    for requirement in (
+        "Complete future bug fixes inside this repair loop",
+        "unpublished patch is not a completed code repair",
+        "Complete fix, tests, independent review, publication/merge, and synchronization",
+        "the supervisor alone resumes gameplay",
+        "within the original cutoff",
+        "original session and pending identity",
+        f"Session: {supervisor.config.session_id}",
+        f"Absolute wallclock cutoff (Unix seconds): {supervisor.state['cutoff']}",
+        "leave any existing pending action unchanged",
+        "preserve its active_plan, step_index, and reservations exactly",
+    ):
+        assert requirement in prompt
+
+
 @pytest.mark.parametrize("status", ["blocked", "uncertain", "completed"])
 def test_terminal_checkpoint_does_not_launch(supervisor, status):
     checkpoint = supervisor.checkpoint()

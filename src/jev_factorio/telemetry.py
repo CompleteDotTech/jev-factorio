@@ -54,8 +54,11 @@ def phase(stage: str, trace: Trace | None = None) -> Iterator[None]:
     try:
         yield
     except BaseException as error:
-        trace({**event, "status": "failed", "seconds": time.perf_counter() - start,
-               "error_code": error_code(error)})
+        try:
+            trace({**event, "status": "failed", "seconds": time.perf_counter() - start,
+                   "error_code": error_code(error)})
+        except BaseException:
+            pass
         raise
     else:
         trace({**event, "status": "returned", "seconds": time.perf_counter() - start})

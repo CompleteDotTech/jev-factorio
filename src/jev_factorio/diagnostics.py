@@ -7,7 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from .evaluation import read_records
-from .memory import CampaignMemory
+from .memory import CampaignMemory, load_checkpoint
 from .skills import Plan
 from .state import GameSnapshot
 
@@ -35,6 +35,12 @@ def reconciliation_report(memory: CampaignMemory, snapshot: GameSnapshot | None 
         "evidence_class": "no_observation",
         "guidance": "Preserve pending intent. Captured evidence is not authorization to retry, clear, or resume a live campaign.",
     }
+    for key in ("background_schema", "background_job", "background_attempt",
+                "input_routes_schema", "input_commitments"):
+        if hasattr(memory, key):
+            report[key] = deepcopy(getattr(memory, key))
+    if getattr(memory, "background_job", None) is not None and memory.pending is None:
+        report["assessment"] = "background_observation_required"
     if snapshot is None:
         return report
     snapshot = captured_snapshot(snapshot.for_jev())
@@ -96,7 +102,7 @@ def cli() -> None:
     source.add_argument("--log", type=Path, help="Previously captured single-session decision JSONL")
     args = parser.parse_args()
     try:
-        memory = CampaignMemory.load(args.checkpoint, args.session_id, args.target)
+        memory = load_checkpoint(args.checkpoint, args.session_id, args.target)
         snapshot = None
         if args.snapshot:
             snapshot = captured_snapshot(json.loads(args.snapshot.read_text(encoding="utf-8")))

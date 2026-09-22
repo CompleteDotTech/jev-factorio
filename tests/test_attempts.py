@@ -183,7 +183,7 @@ def test_checkpoint_failure_prevents_dispatch(monkeypatch, tmp_path):
     assert backend.calls == []
 
 
-@pytest.mark.parametrize("failed_stage", [None, "entity_lookup", "approach", "transfer_rpc"])
+@pytest.mark.parametrize("failed_stage", [None, "approach", "transfer_rpc"])
 def test_native_transfer_tracing_preserves_stages_and_arguments(monkeypatch, failed_stage):
     native = object.__new__(NativeFactory)  # Never initialize the live adapter.
     native.backend = SimpleNamespace(_tools=object())
@@ -195,8 +195,7 @@ def test_native_transfer_tracing_preserves_stages_and_arguments(monkeypatch, fai
             raise RuntimeError("Bearer secret password and raw Lua body")
         return SimpleNamespace(position="position")
 
-    native.entity = lambda role: execute_stage("entity_lookup", role)
-    native.approach = lambda position: execute_stage("approach", position)
+    native.approach_role = lambda role: execute_stage("approach", role)
     native.call = lambda *args: execute_stage("transfer_rpc", *args)
     backend = FleBackend()
     backend._factory = native
@@ -209,7 +208,8 @@ def test_native_transfer_tracing_preserves_stages_and_arguments(monkeypatch, fai
     else:
         backend.execute_traced("factory_insert", parameters, events.append)
         assert operations[-1] == ("transfer_rpc", ("transfer", "lab", "pack", 20, "original-receipt", False))
-        assert [e["stage"] for e in events if e["status"] == "returned"] == ["entity_lookup", "approach", "transfer_rpc"]
+        assert operations[0] == ("approach", ("lab",))
+        assert [e["stage"] for e in events if e["status"] == "returned"] == ["approach", "transfer_rpc"]
     assert "secret" not in json.dumps(events)
 
 
@@ -284,18 +284,20 @@ def test_native_substage_is_durable_before_its_operation(monkeypatch, tmp_path):
     install_plan(monkeypatch, backend)
     native = object.__new__(NativeFactory)
     native.backend = SimpleNamespace(_tools=object())
-    native.entity = lambda role: SimpleNamespace(position="position")
+    approaches = []
 
-    def approach(position):
+    def approach(role):
+        approaches.append(role)
         saved = load(tmp_path / "checkpoint.json")
         assert saved.attempt["dispatch_phases"]["approach"]["status"] == "started"
         assert saved.pending["dispatch"] == "prepared"
         raise RuntimeError("secret failure")
 
-    native.approach = approach
+    native.approach_role = approach
     native.call = lambda *args: pytest.fail("transfer must not be reached")
     backend.execute_traced = lambda action, parameters, trace: native.execute(action, parameters, trace=trace)
     result = controller(tmp_path, backend).step()
+    assert approaches == ["utility:lab"]
     saved = load(tmp_path / "checkpoint.json")
     assert saved.attempt["dispatch_phases"]["approach"]["status"] == "failed"
     assert "transfer_rpc" not in saved.attempt["dispatch_phases"]

@@ -1,0 +1,47 @@
+flowchart TD
+
+subgraph NATIVE["6. Native action execution"]
+    ACTION_TYPE{"Committed action type?"}
+    NATIVE_GUARD["Require original connected character<br/>Cheat mode off and game speed 1<br/>No teleportation or inventory grants"]
+    MOVE["Native pathfinder and walking_state<br/>Actual game ticks move the character"]
+    MINE_TARGET["Select current minable resource<br/>Use native cursor visibility"]
+    MINE_REACH{"Already within native reach?"}
+    MINE_APPROACH["Choose actor-facing collision-free approach<br/>Walk normally"]
+    MINE["Enforce reach and selected entity<br/>Set mining_state<br/>Measure engine-produced inventory gain"]
+    PLACE["Find native-buildable site and direction<br/>Walk into reach<br/>Transfer carried item to cursor<br/>Build and verify item debit"]
+    TRANSFER["Walk into interaction reach<br/>Transfer paid inventory<br/>Verify receipt and entity identity"]
+    CONNECT_NATIVE["Choose compatible native connection endpoints<br/>Plan bounded pipe or pole route<br/>Place each carried connector normally"]
+    CRAFT_NATIVE["Queue native hand-crafting<br/>Consume real ingredients"]
+    CONFIG_NATIVE["Configure unlocked machine recipe<br/>Within native interaction reach"]
+    RESEARCH_NATIVE["Start available native research<br/>Labs consume actual science packs"]
+    LAUNCH_NATIVE["Approach silo and request launch<br/>Native launch counter is authoritative"]
+    WAIT_NATIVE["Wait for actual production or research<br/>No simulated elapsed-time completion"]
+    EXPLORE_NATIVE["Generate bounded normal terrain<br/>No resource grants"]
+    BIND_NATIVE["Bind existing player and character<br/>Never recreate actor during resume"]
+    CONTROL_GUARD["During walking/mining:<br/>Renew 180-tick control lease<br/>Poll native state about every 0.1 seconds<br/>Check actor, speed, reach and progress"]
+    CONTROL_RESULT{"Completed before failure or timeout?"}
+    NATIVE_RETURN["Return success or raise error<br/>Controller still verifies postcondition"]
+
+    ACTION_TYPE --> NATIVE_GUARD
+    NATIVE_GUARD -->|Walk| MOVE
+    NATIVE_GUARD -->|Gather| MINE_TARGET --> MINE_REACH
+    MINE_REACH -->|Yes| MINE
+    MINE_REACH -->|No| MINE_APPROACH --> MOVE
+    MOVE --> CONTROL_GUARD
+    CONTROL_GUARD --> CONTROL_RESULT
+    CONTROL_RESULT -->|Walk complete, mining still required| MINE
+    MINE --> CONTROL_GUARD
+    CONTROL_RESULT -->|Action complete| NATIVE_RETURN
+    CONTROL_RESULT -->|Failure, lease expiry or timeout| NATIVE_RETURN
+    NATIVE_GUARD -->|Place| PLACE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Insert or extract| TRANSFER --> NATIVE_RETURN
+    NATIVE_GUARD -->|Connect| CONNECT_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Craft| CRAFT_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Configure| CONFIG_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Research| RESEARCH_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Launch| LAUNCH_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Wait or idle| WAIT_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Explore| EXPLORE_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Bind| BIND_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Invariant violated| NATIVE_RETURN
+end

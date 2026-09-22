@@ -147,3 +147,23 @@ class CampaignMemory:
             return memory
         except (TypeError, KeyError, AttributeError, json.JSONDecodeError) as error:
             raise ValueError("Invalid controller checkpoint; refusing to reset it") from error
+
+
+def load_checkpoint(path: Path, session_id: str, target: str) -> CampaignMemory:
+    from .controller import HierarchicalLoop
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("Invalid controller checkpoint")
+    loop_type = HierarchicalLoop
+    if {"background_schema", "background_job", "background_attempt"} & data.keys():
+        if not {"background_schema", "background_job"} <= data.keys():
+            raise ValueError("Incomplete background checkpoint extension")
+        from .background import BackgroundWorkLoop
+        loop_type = BackgroundWorkLoop
+    if {"input_routes_schema", "input_commitments"} & data.keys():
+        if not {"input_routes_schema", "input_commitments"} <= data.keys():
+            raise ValueError("Incomplete input-route checkpoint extension")
+        from .input_controller import input_loop_type
+        loop_type = input_loop_type(loop_type)
+    return loop_type.memory_type.load(path, session_id, target)
