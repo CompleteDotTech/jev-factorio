@@ -37,6 +37,15 @@ class ReadyWorkPlanner(EconomicProduction, FactoryPlanner):
         self.speculative = False
         self.allow_service_visits = True
 
+    def _plan(self, *args, **kwargs) -> Plan:
+        plan = super()._plan(*args, **kwargs)
+        if self.focus is None:
+            return plan
+        return replace(plan, materials={**(plan.materials or {}), "local_objective": {
+            "item": self.focus[0], "inventory_target": self.focus[1],
+            "ultimate_goal": self.goal,
+        }})
+
     def plan(self):
         return self._capacity_work(ready_research_work(self, super().plan()))
 
