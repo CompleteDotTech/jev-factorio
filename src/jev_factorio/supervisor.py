@@ -13,8 +13,12 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from uuid import uuid4
 from pathlib import Path
 from typing import Callable
+
+from .provenance import CONTEXT_ENV, append_audit, digest_json, identifier, source_revision
 
 
 def atomic_json(path: Path, value: dict) -> None:
@@ -46,8 +50,12 @@ class SupervisorConfig:
     repair_seconds: float = 1800
     backoff_seconds: float = 30
     tick_seconds: float = 1
+    run_id: str | None = None
+    run_manifest: Path | None = None
 
     def validate(self) -> None:
+        if self.run_id is not None:
+            identifier(self.run_id)
         for name in ("started_at", "duration_hours", "poll_seconds", "hang_seconds",
                      "repair_seconds", "backoff_seconds", "tick_seconds"):
             value = getattr(self, name)
@@ -71,6 +79,7 @@ class Supervisor:
         self.process = None
         self.output = None
         self.stop_requested = False
+        self.audit_failed = False
 
     @property
     def state_path(self) -> Path:
@@ -79,15 +88,160 @@ class Supervisor:
     def remaining(self) -> float:
         return max(0, self.state["cutoff"] - self.clock())
 
-    def event(self, kind: str, **fields) -> None:
+    def _flush_audit(self) -> None:
+        pending = self.state.get("audit_pending")
+        if pending is not None:
+            if pending.get("run_id") != self.state["run_id"]:
+                raise ValueError("Pending audit belongs to a different run")
+            append_audit(self.config.state_dir / "events.jsonl", pending)
+            self.save(audit_pending=None)
+
+    def transition(self, kind: str, updates: dict | None = None, **fields) -> bool:
+        """Atomically persist state changes with a replayable audit outbox.
+
+        Never launch another child after an audit failure. Replaying the outbox
+        on restart closes both the before-append and after-fsync crash windows.
+        """
         try:
-            with (self.config.state_dir / "events.jsonl").open("a") as stream:
-                stream.write(json.dumps({"at": self.clock(), "event": kind, **fields}) + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-        except OSError as error:
+            self._flush_audit()
+            next_state = {**self.state, **(updates or {})}
+            # Arbitrary exception text can contain URLs/credentials. Keep a
+            # recognizable reason code and a fingerprint, not raw diagnostics.
+            for key in ("reason", "error"):
+                if key in fields:
+                    text = str(fields[key])
+                    fields[key + "_sha256"] = hashlib.sha256(text.encode()).hexdigest()
+                    code = text.split(":", 1)[0]
+                    allowed = {"blocked", "uncertain", "completed", "cutoff", "stopped",
+                               "process_exit", "checkpoint_heartbeat_timeout", "checkpoint_invalid",
+                               "checkpoint_invalid_on_restart", "gameplay_error", "execution_failed",
+                               "checkpoint_reconciliation", "game_intervention", "infrastructure_change",
+                               "code_change", "other"}
+                    fields[key] = code if key == "reason" and code in allowed else "redacted"
+            now = self.clock()
+            incident = next_state.get("incident") or {}
+            record = {
+                **fields, "schema": "jev-factorio.supervisor-event.v1",
+                "at": now, "utc": datetime.fromtimestamp(now, timezone.utc).isoformat(),
+                "monotonic_ns": time.monotonic_ns(), "writer_pid": os.getpid(),
+                "event": kind, "event_id": str(uuid4()),
+                "run_id": next_state["run_id"], "session_id": self.config.session_id,
+                "segment_id": next_state["segment_id"],
+                "sequence": next_state.get("audit_sequence", 0) + 1,
+                "incident_id": fields.get("incident_id", incident.get("incident_id")),
+            }
+            self.save(**{**(updates or {}), "audit_sequence": record["sequence"],
+                         "audit_pending": record})
+            self._flush_audit()
+            return True
+        except (OSError, ValueError, TypeError) as error:
             self.stop_requested = True
-            print(f"Supervisor audit failed; stopping: {error}", file=sys.stderr, flush=True)
+            self.audit_failed = True
+            print(f"Supervisor audit failed; stopping ({type(error).__name__})",
+                  file=sys.stderr, flush=True)
+            return False
+
+    def event(self, kind: str, **fields) -> None:
+        self.transition(kind, **fields)
+
+    def initialize_provenance(self, *, existing: bool) -> None:
+        requested = self.config.run_id
+        manifest_path = self.config.run_manifest or self.state.get("run_manifest")
+        manifest_digest = self.state.get("run_manifest_sha256")
+        if manifest_path is not None:
+            path = Path(manifest_path).resolve()
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict):
+                raise ValueError("Run manifest must be an object")
+            manifest_id = identifier(manifest.get("run_id"))
+            if requested is not None and requested != manifest_id:
+                raise ValueError("Run ID differs from run manifest")
+            requested = manifest_id
+            current_digest = digest_json(manifest)
+            if manifest_digest is not None and current_digest != manifest_digest:
+                raise ValueError("Run manifest cannot be changed")
+            manifest_path, manifest_digest = str(path), current_digest
+        stored = self.state.get("run_id")
+        if "run_id" in self.state:
+            identifier(stored)
+            if requested is not None and requested != stored:
+                raise ValueError("Existing run ID cannot be changed")
+            self._flush_audit()
+            if manifest_path is not None and self.state.get("run_manifest") is None:
+                self.transition("run_manifest_attached", {
+                    "run_manifest": manifest_path, "run_manifest_sha256": manifest_digest,
+                }, manifest_sha256=manifest_digest)
+        else:
+            self.save(run_id=requested or str(uuid4()), segment=1,
+                      segment_id="seg-000001", audit_sequence=0,
+                      audit_pending=None, revision_initialized=False, code_revision=None,
+                      run_manifest=manifest_path, run_manifest_sha256=manifest_digest)
+            self.event("provenance_started", legacy_history=existing,
+                       manifest_sha256=manifest_digest)
+        if self.state.get("incident") and not self.state["incident"].get("incident_id"):
+            self.transition("incident_provenance_attached", {
+                "incident": {**self.state["incident"], "incident_id": str(uuid4())},
+            }, legacy_history=True)
+
+    def snapshot_revision(self, *, manual: bool = False) -> dict | None:
+        if self.stop_requested or (not manual and self.remaining() <= 0):
+            return None
+        return source_revision(
+            self.config.cwd, timeout=10 if manual else min(10, self.remaining()),
+            exclude_untracked=(self.config.state_dir, self.config.checkpoint),
+            exclude_untracked_prefixes=(self.config.checkpoint.with_name(
+                self.config.checkpoint.name + "."),),
+        )
+
+    def record_revision(self, revision: dict | None, cause: str, **fields) -> bool:
+        before = self.state.get("code_revision")
+        initialized = self.state.get("revision_initialized", False)
+        if initialized and revision == before:
+            return True
+        segment = self.state["segment"] + int(initialized)
+        if not initialized:
+            fields = {**fields, "actor_type": "supervisor", "intervention_type": None}
+        kind = ("segment_started" if not initialized else
+                "code_revision_changed" if before is not None and revision is not None else
+                "source_provenance_changed")
+        return self.transition(kind, {
+            "segment": segment, "segment_id": f"seg-{segment:06d}",
+            "code_revision": revision, "revision_initialized": True,
+        }, from_segment_id=self.state["segment_id"] if initialized else None,
+            source_before=before, source_after=revision, cause=cause,
+            change_known=before is not None and revision is not None, **fields)
+
+    def record_manual_intervention(self, report: dict) -> None:
+        if not isinstance(report, dict):
+            raise ValueError("Manual intervention report must be an object")
+        actor = identifier(report.get("actor"))
+        reason = report.get("reason")
+        if not isinstance(reason, str) or reason not in {"checkpoint_reconciliation", "game_intervention",
+                          "infrastructure_change", "code_change", "other"}:
+            raise ValueError("Invalid manual intervention reason")
+        evidence = report.get("evidence")
+        if not isinstance(evidence, list) or not evidence or not all(
+            isinstance(item, str) and item.strip() for item in evidence
+        ):
+            raise ValueError("Manual intervention requires nonempty evidence strings")
+        before = self.state.get("code_revision")
+        after = self.snapshot_revision(manual=True)
+        segment = self.state["segment"] + 1
+        previous_segment = self.state["segment_id"]
+        if not self.transition("manual_intervention", {
+            "segment": segment, "segment_id": f"seg-{segment:06d}",
+            "code_revision": after, "revision_initialized": True,
+            "manual_interventions": self.state.get("manual_interventions", 0) + 1,
+        }, actor_type="human", actor=actor, intervention_type="manual_intervention",
+            reason=reason, declaration_only=True, report_sha256=digest_json(report),
+            evidence_count=len(evidence), from_segment_id=previous_segment,
+            source_before=before, source_after=after):
+            return
+        if before is not None and after is not None and before != after:
+            self.event("code_revision_changed", cause="manual_intervention",
+                       actor_type="human", intervention_type="manual_intervention",
+                       source_before=before, source_after=after,
+                       from_segment_id=previous_segment, change_known=True)
 
     def save(self, **fields) -> None:
         self.state.update(fields)
@@ -106,20 +260,27 @@ class Supervisor:
             raise ValueError("Checkpoint status is invalid")
         return checkpoint
 
-    def initialize(self) -> None:
+    def initialize(self, *, record_only: bool = False) -> None:
         cutoff = self.config.started_at + self.config.duration_hours * 3600
         identity = {"session_id": self.config.session_id,
                     "checkpoint": str(self.config.checkpoint.resolve()),
                     "cwd": str(self.config.cwd.resolve()),
                     "started_at": self.config.started_at, "cutoff": cutoff}
-        if self.state_path.exists():
+        existing = self.state_path.exists()
+        if existing:
             self.state = json.loads(self.state_path.read_text())
             if any(self.state.get(key) != value for key, value in identity.items()):
                 raise ValueError("Existing supervision identity/cutoff cannot be changed")
-            self.recover_process()
         else:
             self.state = {**identity, "attempt": 0, "phase": "ready", "process": None}
             self.save()
+        if record_only and self.state.get("process"):
+            raise ValueError("Manual intervention requires no saved process; recover supervision separately")
+        self.initialize_provenance(existing=existing)
+        if record_only:
+            return
+        self.recover_process()
+        self.close_interrupted_attempt()
         if not self.state.get("repair_required"):
             try:
                 self.save(last_valid_checkpoint=self.checkpoint())
@@ -144,7 +305,8 @@ class Supervisor:
             raise RuntimeError("Saved process PID was reused; refusing unsafe recovery")
         self.kill_group(saved["pid"])
         self.save(process=None, phase="recovered")
-        self.event("orphan_process_group_stopped", pid=saved["pid"])
+        self.event("orphan_process_group_stopped", pid=saved["pid"],
+                   intervention_type="operational_recovery", actor_type="supervisor")
 
     @staticmethod
     def kill_group(pid: int) -> None:
@@ -156,6 +318,9 @@ class Supervisor:
     def launch(self, command: list[str], phase: str, prompt: Path | None = None) -> None:
         if self.remaining() <= 0 or self.stop_requested:
             return
+        execution_id = str(uuid4())
+        if not self.transition("process_prepared", phase=phase, execution_id=execution_id):
+            return
         self.output = (self.config.state_dir / f"{phase}.log").open("ab")
         input_stream = prompt.open("rb") if prompt else subprocess.DEVNULL
         temporary = self.config.cwd / "runs" / "tmp"
@@ -163,6 +328,13 @@ class Supervisor:
         environment = os.environ.copy()
         environment["TMPDIR"] = str(temporary)
         environment["PYTHONPATH"] = str(self.config.cwd / "src")
+        # Do not leak a gameplay context into repair tests or Git verification.
+        environment.pop(CONTEXT_ENV, None)
+        if phase == "gameplay":
+            environment[CONTEXT_ENV] = json.dumps({
+                "run_id": self.state["run_id"], "segment_id": self.state["segment_id"],
+                "execution_id": execution_id, "code_revision": self.state["code_revision"],
+            }, sort_keys=True)
         try:
             self.process = self.popen(
                 command, cwd=self.config.cwd, stdin=input_stream,
@@ -174,7 +346,8 @@ class Supervisor:
                 input_stream.close()
         self.save(phase=phase, process={"pid": self.process.pid,
                                       "identity": self.process_identity(self.process.pid)})
-        self.event("process_started", phase=phase, pid=self.process.pid)
+        self.event("process_started", phase=phase, pid=self.process.pid,
+                   execution_id=execution_id, code_revision=self.state.get("code_revision"))
 
     def stop_process(self) -> None:
         if self.process is not None:
@@ -207,7 +380,12 @@ class Supervisor:
         self.save(last_valid_checkpoint=checkpoint)
         if checkpoint["status"] != "running":
             return checkpoint["status"]
+        if not self.record_revision(self.snapshot_revision(), "gameplay_start",
+                                    actor_type="unknown", intervention_type="unattributed_change"):
+            return "stopped"
         self.launch(self.gameplay_command(), "gameplay")
+        if self.process is None:
+            return "stopped" if self.stop_requested else "cutoff"
         last_change = self.clock()
         signature = self.config.checkpoint.stat().st_mtime_ns
         while self.remaining() > 0 and not self.stop_requested:
@@ -232,6 +410,10 @@ class Supervisor:
     def repair_prompt(self, reason: str, result: Path) -> str:
         return f"""Repair the stopped autonomous Factorio campaign in {self.config.cwd}.
 Session: {self.config.session_id}
+Research run: {self.state['run_id']}
+Research segment: {self.state['segment_id']}
+Incident: {(self.state.get('incident') or {}).get('incident_id')}
+Repair attempt: {self.state['attempt']}
 Controller checkpoint: {self.config.checkpoint}
 Supervisor audit/log directory: {self.config.state_dir}
 Read {self.config.state_dir / 'OPERATIONS.md'} first if present for native session
@@ -270,6 +452,7 @@ If any acceptance requirement cannot be completed, report blocked.
 Write a JSON object to {result} with these fields:
 status ("repaired" or "blocked"), kind ("code" or "operational"),
 session_id, checkpoint (absolute path),
+run_id, incident_id, attempt (copy the research identity above exactly),
 tests_passed (boolean), checks_passed (boolean), exact_head_reviewed (boolean),
 merged (boolean), remotes_synced (boolean), commit (full 40-character SHA),
 pr_url (GitHub PR URL), evidence (nonempty list of evidence strings).
@@ -397,6 +580,11 @@ Only report repaired when every acceptance requirement is verified.
                         source_before: tuple[str, str] | None = None) -> bool:
         try:
             result = json.loads(path.read_text())
+            expected = {"run_id": self.state.get("run_id"),
+                        "incident_id": (self.state.get("incident") or {}).get("incident_id"),
+                        "attempt": self.state.get("attempt")}
+            if any(key in result and result[key] != value for key, value in expected.items()):
+                return False
             if result.get("status") != "repaired":
                 return False
             if result.get("session_id") != self.config.session_id:
@@ -415,6 +603,18 @@ Only report repaired when every acceptance requirement is verified.
                 if any(current.get(key) != previous.get(key) for key in (
                     "pending", "active_plan", "step_index", "reservations", "attempt"
                 )):
+                    return False
+            extension_keys = ("background_schema", "background_job", "background_attempt",
+                              "input_routes_schema", "input_commitments")
+            if any(key in previous and current.get(key) != previous[key]
+                   for key in extension_keys):
+                return False
+            if previous.get("background_job") or previous.get("input_commitments"):
+                if any(current.get(key) != previous.get(key)
+                       for key in ("active_plan", "step_index", "reservations")):
+                    return False
+                history = previous.get("history", [])
+                if current.get("history", [])[:len(history)] != history:
                     return False
             if current.get("attempt_outcomes") != previous.get("attempt_outcomes"):
                 return False
@@ -445,19 +645,48 @@ Only report repaired when every acceptance requirement is verified.
             previous = self.state.get("last_valid_checkpoint")
             if previous is None:
                 raise
-        self.save(repair_required=True, incident={
-            "reason": reason, "checkpoint": previous, "source": None,
-        })
+        if not self.transition("incident_started", {
+            "repair_required": True,
+            "incident": {"incident_id": str(uuid4()), "reason": reason,
+                         "checkpoint": previous, "source": None,
+                         "code_revision": self.state.get("code_revision")},
+        }, reason=reason, checkpoint_sha256=digest_json(previous)):
+            return
         incident = {**self.state["incident"], "source": self.source_identity()}
         self.save(incident=incident)
         self.event("repair_required", reason=reason)
 
+    def close_interrupted_attempt(self) -> None:
+        if not self.state.get("repair_attempt_open"):
+            return
+        incident_id = self.state.get("attempt_incident_id")
+        revision = self.snapshot_revision()
+        if not self.record_revision(revision, "interrupted_repair",
+                                    incident_id=incident_id, attempt=self.state["attempt"],
+                                    accepted=False, actor_type="unknown",
+                                    intervention_type="repair_attempt"):
+            return
+        self.transition("repair_interrupted", {"repair_attempt_open": False},
+                        incident_id=incident_id, attempt=self.state["attempt"],
+                        accepted=False, outcome="unknown", intervention_type="repair_attempt",
+                        source_before=self.state.get("attempt_source_before"),
+                        source_after=revision)
+
     def repair(self, reason: str) -> bool:
+        self.close_interrupted_attempt()
         self.begin_repair(reason)
+        if self.stop_requested:
+            return False
         incident = self.state["incident"]
         previous, source_before = incident["checkpoint"], incident["source"]
         attempt = self.state["attempt"] + 1
-        self.save(attempt=attempt)
+        attempt_source_before = self.snapshot_revision()
+        if not self.transition("repair_started", {
+            "attempt": attempt, "repair_attempt_open": True,
+            "attempt_incident_id": incident["incident_id"],
+            "attempt_source_before": attempt_source_before,
+        }, attempt=attempt, actor_type="repair_agent", source_before=attempt_source_before):
+            return False
         result = self.config.state_dir / f"repair-{attempt}.json"
         prompt = self.config.state_dir / f"repair-{attempt}.txt"
         prompt.write_text(self.repair_prompt(reason, result))
@@ -470,21 +699,62 @@ Only report repaired when every acceptance requirement is verified.
             self.pause(min(self.config.poll_seconds, deadline - self.clock()))
         returncode = self.process.poll()
         self.stop_process()
+        try:
+            raw_result = result.read_bytes()
+            report = json.loads(raw_result)
+            if not isinstance(report, dict):
+                report = {}
+        except (OSError, ValueError):
+            raw_result, report = b"", {}
         accepted = returncode == 0 and self.validate_repair(result, previous, source_before)
-        self.event("repair_finished", attempt=attempt, returncode=returncode, accepted=accepted)
+        # Evidence fingerprints must refer to the artifact that was validated,
+        # not a replacement written during Git/test verification.
         if accepted:
-            self.save(repair_required=False, incident=None,
-                      last_valid_checkpoint=self.checkpoint(), phase="ready")
-        return accepted
+            try:
+                accepted = result.read_bytes() == raw_result
+            except OSError:
+                accepted = False
+        revision = self.snapshot_revision()
+        declared = report.get("kind")
+        if not isinstance(declared, str) or declared not in {"code", "operational"}:
+            declared = None
+        if (accepted and declared == "operational" and incident.get("code_revision") is not None
+                and revision is not None and incident["code_revision"] != revision):
+            accepted = False
+        if accepted and declared == "code" and (revision is None or revision["commit"] != report.get("commit")):
+            accepted = False
+        accepted = bool(accepted and not self.stop_requested)
+        intervention = ("code_repair" if accepted and declared == "code" else
+                        "operational_recovery" if accepted else "repair_attempt")
+        if not self.record_revision(revision, "repair_attempt", attempt=attempt,
+                                    incident_id=incident["incident_id"], accepted=accepted,
+                                    actor_type="repair_agent", intervention_type=intervention):
+            return False
+        updates = {"repair_attempt_open": False}
+        if accepted:
+            updates.update(repair_required=False, incident=None,
+                           last_valid_checkpoint=self.checkpoint(), phase="ready")
+        durable = self.transition("repair_finished", updates, attempt=attempt,
+            incident_id=incident["incident_id"], returncode=returncode, accepted=accepted,
+            declared_kind=declared, intervention_type=intervention, actor_type="repair_agent",
+            source_before=attempt_source_before, source_after=revision,
+            result_file=result.name, result_sha256=hashlib.sha256(raw_result).hexdigest() if raw_result else None,
+            correlation_complete=all(key in report for key in ("run_id", "incident_id", "attempt")))
+        return accepted and durable
 
-    def run(self) -> int:
+    def run(self, manual_intervention: dict | None = None) -> int:
         self.config.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         with self.lock_path().open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 raise RuntimeError("Another supervisor owns this repository") from error
-            self.initialize()
+            if manual_intervention is not None and not self.state_path.exists():
+                raise ValueError("Manual intervention requires an existing supervised run")
+            self.initialize(record_only=manual_intervention is not None)
+            if manual_intervention is not None:
+                self.record_manual_intervention(manual_intervention)
+                return 1 if self.stop_requested else 0
             failures = 0
             try:
                 while self.remaining() > 0 and not self.stop_requested:
@@ -500,7 +770,7 @@ Only report repaired when every acceptance requirement is verified.
                     self.event("gameplay_stopped", reason=reason)
                     if reason == "completed":
                         self.save(phase="completed")
-                        return 0
+                        return 1 if self.audit_failed else 0
                     if reason in {"cutoff", "stopped"}:
                         break
                     self.begin_repair(reason)
@@ -512,11 +782,12 @@ Only report repaired when every acceptance requirement is verified.
                             self.event("repair_error", error=str(error))
                         finally:
                             self.stop_process()
+                            self.close_interrupted_attempt()
                         failures = 0 if accepted else min(failures + 1, 6)
                         self.pause(min(900, self.config.backoff_seconds * 2 ** failures))
                 self.save(phase="stopped" if self.stop_requested else "cutoff")
                 self.event(self.state["phase"])
-                return 0
+                return 1 if self.audit_failed else 0
             finally:
                 self.stop_process()
 
@@ -528,6 +799,11 @@ Only report repaired when every acceptance requirement is verified.
 def cli() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, required=True)
+    parser.add_argument("--run-id", help="Shared research run ID; immutable once assigned")
+    parser.add_argument("--run-manifest", type=Path,
+                        help="Read an existing manifest's run_id without modifying it")
+    parser.add_argument("--record-manual-intervention", type=Path,
+                        help="Audit a human intervention JSON report while stopped; do not run gameplay")
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--started-at", type=float, required=True)
@@ -542,11 +818,15 @@ def cli() -> None:
     parser.add_argument("--tick-seconds", type=float, default=1)
     arguments = vars(parser.parse_args())
     try:
+        manual_path = arguments.pop("record_manual_intervention")
+        manual = json.loads(manual_path.read_text(encoding="utf-8")) if manual_path else None
+        if manual_path and not isinstance(manual, dict):
+            raise ValueError("Manual intervention report must be an object")
         arguments["repair_command"] = json.loads(arguments.pop("repair_command_json"))
         for key in ("state_dir", "checkpoint", "cwd"):
             arguments[key] = arguments[key].resolve()
         supervisor = Supervisor(SupervisorConfig(**arguments))
-    except (ValueError, TypeError) as error:
+    except (OSError, ValueError, TypeError) as error:
         parser.error(str(error))
 
     def stop(signum, frame) -> None:
@@ -554,7 +834,7 @@ def cli() -> None:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    raise SystemExit(supervisor.run())
+    raise SystemExit(supervisor.run(manual_intervention=manual))
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from .memory import CampaignMemory
 from .planning.goals import GOALS, completed, goal_order
 from .skills import Plan, compile_plans
 from .state import GameSnapshot
+from .provenance import gameplay_context
 from .telemetry import DISPATCH_STAGES, error_code, make_attempt, phase, utc_now, validate_phase
 
 
@@ -56,6 +57,7 @@ class HierarchicalLoop(AgentLoop):
             raise ValueError("Invalid decision interval")
         if min(max_request_bytes, max_pending_polls, max_stalled_decisions) < 1:
             raise ValueError("Controller budgets must be positive")
+        self.provenance = gameplay_context()
         self.order = goal_order(target)
         self.backend, self.jev, self.policy = backend, jev, policy
         self.target, self.confidence_floor = target, confidence_floor
@@ -177,6 +179,7 @@ class HierarchicalLoop(AgentLoop):
         self._save()
         decision = self._decision
         record = {
+            **self.provenance,
             "schema_version": 2, "controller": "hierarchical", "policy": self.policy,
             "tick": before.tick, "session_id": before.session_id,
             "world_kind": before.world_kind, "goal": self.memory.active_goal,

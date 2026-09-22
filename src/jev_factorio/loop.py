@@ -22,6 +22,7 @@ import requests
 from .jev_client import make_client
 from .questions import build_questions
 from .state import GameSnapshot
+from .provenance import gameplay_context
 
 
 def fallback_policy(snapshot: GameSnapshot) -> str:
@@ -47,6 +48,7 @@ def fallback_policy(snapshot: GameSnapshot) -> str:
 class AgentLoop:
     def __init__(self, backend, jev=None, confidence_floor: float = 0.45,
                  tick_seconds: float = 2.0, log_file: str | None = None):
+        self.provenance = gameplay_context()
         self.backend = backend
         self.jev = jev or make_client()
         self.confidence_floor = confidence_floor
@@ -74,6 +76,7 @@ class AgentLoop:
         outcome = self.backend.act(action)
         after = self.backend.observe()
         record = {
+            **self.provenance,
             "tick": snapshot.tick, "goal": answers["goal"]["choice"],
             "action": action, "source": source,
             "confidence": action_ans["confidence"],
