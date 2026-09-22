@@ -153,6 +153,18 @@ def audit_producer(events: list[dict], report) -> None:
             if captured is None:
                 issue("invalid_action_reference", "Captured action reference has no preceding preparation")
                 continue
+            unknown_plan = False
+            if kind in {"verification", "pending_expired"}:
+                prepared = captured["prepared"]["payload"]
+                if any(payload.get(key) is not None and prepared.get(key) is not None
+                       and payload[key] != prepared[key] for key in ("plan_id", "step_index")):
+                    issue("verification_plan_conflict", "Action evidence refers to another plan or step")
+                    captured["verified"] = None
+                    continue
+                if any(prepared.get(key) is not None and payload.get(key) is None
+                       for key in ("plan_id", "step_index")):
+                    unknown_plan = True
+                    issue("unknown_verification_plan", "Action evidence lacks captured plan-step continuity", "gap")
             if kind == "action_returned":
                 if captured["result"] is not None:
                     issue("duplicate_action_result", "Action has multiple recorded results")
@@ -161,6 +173,12 @@ def audit_producer(events: list[dict], report) -> None:
                 prepared = captured["prepared"]["payload"]
                 if prepared.get("decision_id") != decision:
                     issue("action_decision_conflict", "Action result belongs to another decision")
+                origin_session = captured["prepared"].get("session_id")
+                result_session = event.get("session_id")
+                if origin_session is None or result_session is None:
+                    issue("unknown_action_session", "Action result lacks known session continuity", "gap")
+                elif origin_session != result_session:
+                    issue("action_session_conflict", "Action result belongs to another session")
                 if any(payload.get(key) != prepared.get(key) for key in ("action", "parameters", "plan_id", "step_index")):
                     issue("action_result_conflict", "Action result differs from preparation")
             elif kind == "verification":
@@ -177,6 +195,18 @@ def audit_producer(events: list[dict], report) -> None:
                     issue("missing_verification_observation", "Verification has no captured observation", "gap")
                 elif observed["sequence"] <= captured["prepared"]["sequence"]:
                     issue("stale_verification", "Verification observation precedes preparation")
+                sessions = [captured["prepared"].get("session_id"), event.get("session_id")]
+                if observed is not None:
+                    sessions.append(observed.get("session_id"))
+                known_sessions = {session for session in sessions if session is not None}
+                if len(known_sessions) > 1:
+                    issue("verification_session_conflict", "Verification crosses captured session boundaries")
+                    captured["verified"] = None
+                elif any(session is None for session in sessions):
+                    issue("unknown_verification_session", "Verification lacks known session continuity", "gap")
+                    captured["verified"] = None
+                if unknown_plan:
+                    captured["verified"] = None
     for captured in actions.values():
         if captured["result"] is None:
             report.add("gap", "unknown_acknowledgment", "Prepared action has no recorded result")
@@ -186,7 +216,22 @@ def audit_producer(events: list[dict], report) -> None:
         if call["result"] is None:
             report.add("gap", "unfinished_model_call", "Model request has no recorded result")
     for frame in frames.values():
-        if not any(event["event_type"] in {"step_finished", "step_failed"} for event in frame["evidence"]):
+        starts = [event for event in frame["evidence"] if event["event_type"] == "step_started"]
+        terminals = [event for event in frame["evidence"]
+                     if event["event_type"] in {"step_finished", "step_failed"}]
+        if not starts:
+            report.add("gap", "missing_step_start", "Captured decision step has no start event",
+                       decision_id=frame["decision_id"])
+        if len(starts) > 1 or len(terminals) > 1:
+            report.add("error", "duplicate_step_boundary", "Decision step has duplicate lifecycle boundaries",
+                       decision_id=frame["decision_id"])
+        if starts and starts[0] is not frame["evidence"][0]:
+            report.add("error", "late_step_start", "Decision evidence precedes its start",
+                       decision_id=frame["decision_id"])
+        if terminals and terminals[-1] is not frame["evidence"][-1]:
+            report.add("error", "post_terminal_evidence", "Decision evidence follows its terminal event",
+                       decision_id=frame["decision_id"])
+        if not terminals:
             report.add("gap", "unfinished_step", "Captured decision step has no terminal event",
                        decision_id=frame["decision_id"])
     report.decisions = list(frames.values())

@@ -12,14 +12,15 @@ def capture(tmp_path):
     from jev_factorio.backends.mock import MockBackend
 
     path = tmp_path / "research"
+    backend = MockBackend()
     with ResearchLog(path, RunConfiguration("mock", "flat", "jev"), environ={}) as sink:
         trace = CausalTrace(sink, "flat")
         trace.begin_step()
-        trace.observe(MockBackend(), "before_decision")
+        trace.observe(backend, "before_decision")
         trace.emit("candidate_set_created", {"candidates": {"idle": "wait"}, "status": "ok"})
         trace.emit("decision", {"action": "idle", "model_called": False, "reason": "矿石"})
         trace.dispatch(lambda: "waited", "idle", role="flat")
-        trace.observe(MockBackend(), "after_action")
+        trace.observe(backend, "after_action")
         trace.emit("verification", {"verified": None, "phase": "flat"})
         trace.emit("step_finished", {"action": "idle"})
     return path
@@ -155,3 +156,59 @@ def test_final_mock_controller_producer_replays_without_execution(tmp_path, monk
     assert report.integrity["status"] == "verified_source"
     assert report.decisions
     assert before == {entry.name: entry.read_bytes() for entry in path.iterdir()}
+
+
+@pytest.mark.parametrize("session", ["another-world", None])
+def test_verification_cannot_cross_or_invent_session_continuity(tmp_path, session):
+    from jev_factorio.research_log import ResearchLog, RunConfiguration
+    path = tmp_path / "research"
+    with ResearchLog(path, RunConfiguration("mock", "flat", "jev"), environ={}) as sink:
+        context = {"trace_id": "trace", "decision_id": "decision:1"}
+        sink.emit("step_started", context)
+        action = {**context, "action_id": "action:1", "action": "idle",
+                  "parameters": {}, "session_id": "original-world"}
+        sink.emit("action_prepared", action)
+        sink.emit("action_returned", {**action, "status": "ok"})
+        observation = {**context, "observation_id": "observation:1", "session_id": session}
+        sink.emit("observation", {**observation, "status": "ok"})
+        sink.emit("verification", {**observation, "action_id": "action:1", "verified": True})
+        sink.emit("step_finished", context)
+    report = replay_log(path, format="research-v1")
+    assert report.status == ("invalid" if session else "incomplete")
+    assert report.decisions[0]["actions"][0]["verified"] is None
+
+
+@pytest.mark.parametrize("kinds", [
+    ["step_finished"], ["step_started", "step_started", "step_finished"],
+    ["step_started", "step_finished", "step_failed"],
+    ["step_started", "step_finished", "observation_validated"],
+])
+def test_incomplete_or_conflicting_step_lifecycle_is_not_complete(tmp_path, kinds):
+    from jev_factorio.research_log import ResearchLog, RunConfiguration
+    path = tmp_path / "research"
+    with ResearchLog(path, RunConfiguration("mock", "flat", "jev"), environ={}) as sink:
+        for kind in kinds:
+            sink.emit(kind, {"trace_id": "trace", "decision_id": "decision:1"})
+    report = replay_log(path, format="research-v1")
+    assert report.status == ("incomplete" if len(kinds) == 1 else "invalid")
+
+
+@pytest.mark.parametrize("reference", [{"plan_id": "wrong"}, {"step_index": 9}])
+def test_delayed_verification_rejects_conflicting_plan_step(tmp_path, reference):
+    from jev_factorio.research_log import ResearchLog, RunConfiguration
+    path = tmp_path / "research"
+    with ResearchLog(path, RunConfiguration("mock", "hierarchical", "jev"), environ={}) as sink:
+        context = {"trace_id": "trace", "decision_id": "decision:1", "session_id": "world"}
+        sink.emit("step_started", context)
+        action = {**context, "action_id": "action:1", "action": "idle",
+                  "parameters": {}, "plan_id": "plan", "step_index": 0}
+        sink.emit("action_prepared", action)
+        sink.emit("action_returned", {**action, "status": "ok"})
+        sink.emit("observation", {**context, "observation_id": "observation:1", "status": "ok"})
+        sink.emit("verification", {**action, "observation_id": "observation:1",
+                                   "verified": True, **reference})
+        sink.emit("step_finished", context)
+    report = replay_log(path, format="research-v1")
+    assert report.status == "invalid"
+    assert report.decisions[0]["actions"][0]["verified"] is None
+    assert any(finding.code == "verification_plan_conflict" for finding in report.findings)
