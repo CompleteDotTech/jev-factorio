@@ -16,9 +16,10 @@ from .demand import SupplyLedger, horizon_demands
 from .service_visits import service_visit
 from .scheduling import scheduled_research_wait, ready_research_work
 from .factory import FactoryPlanner, RAW_ITEMS, compile_factory
+from .economics import EconomicProduction
 
 
-class ReadyWorkPlanner(FactoryPlanner):
+class ReadyWorkPlanner(EconomicProduction, FactoryPlanner):
     def __init__(self, catalog: Catalog, snapshot: GameSnapshot, goal: str,
                  collection_batch: int = 10, max_candidates: int = 8) -> None:
         super().__init__(catalog, snapshot, goal)
@@ -37,7 +38,7 @@ class ReadyWorkPlanner(FactoryPlanner):
         self.allow_service_visits = True
 
     def plan(self):
-        return ready_research_work(self, super().plan())
+        return self._capacity_work(ready_research_work(self, super().plan()))
 
     def _wait(self, effect, item="", threshold=0, role="", timeout=36000, identity=None):
         plan = super()._wait(effect, item, threshold, role, timeout, identity)
@@ -76,12 +77,12 @@ class ReadyWorkPlanner(FactoryPlanner):
         parameters = step.parameters
         role, item = parameters["role"], parameters["item"]
         machine = self.entities[role]
-        # Initially batch only dedicated, actively smelting solid-item machines.
-        # A chest, stopped furnace, mixed fluid recipe, or missing telemetry is
+        # Batch dedicated, actively producing deterministic solid-item machines.
+        # A chest, stopped machine, mixed fluid recipe, or missing telemetry is
         # not evidence that a larger output will arrive.
-        recipe_name = role.removeprefix("recipe:")
+        recipe_name = machine.get("recipe") or role.removeprefix("recipe:")
         recipe = self.catalog.recipes.get(recipe_name, {})
-        if (not role.startswith("recipe:") or recipe.get("category") != "smelting"
+        if (not role.startswith(("recipe:", "capacity:")) or not recipe
                 or machine.get("crafting") is not True
                 or any(entry["type"] != "item" for entry in recipe.get("ingredients", []))):
             return plan
