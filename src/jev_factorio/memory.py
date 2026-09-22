@@ -30,6 +30,7 @@ class CampaignMemory:
     stalled_decisions: int = 0
     attempt: dict | None = None
     attempt_outcomes: list[dict] = field(default_factory=list)
+    transfer_recovery: dict | None = None
 
     def event(self, kind: str, **details) -> None:
         self.history.append({"kind": kind, **details})
@@ -78,6 +79,10 @@ class CampaignMemory:
             if data["version"] == 2 and not {"attempt", "attempt_outcomes"} <= data.keys():
                 raise ValueError("Version 2 checkpoint is missing attempt fields")
             memory = cls(**data)
+            if memory.transfer_recovery is not None and not isinstance(memory.transfer_recovery, dict):
+                raise ValueError("Invalid transfer recovery reference")
+            if memory.transfer_recovery is not None and memory.pending is None:
+                raise ValueError("Transfer recovery requires a retained pending action")
             if (memory.version not in {1, 2} or memory.session_id != session_id
                     or memory.target != target or not session_id):
                 raise ValueError("Checkpoint version, session, or target mismatch")
