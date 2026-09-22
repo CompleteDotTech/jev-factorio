@@ -94,7 +94,16 @@ def service_visit(planner, plan, *, max_steps: int = 3):
             target = max(target, min(20 * each, snapshot.inventory.get(item, 0)))
         buffered = view.factory['entities'][source].get('input', {}).get(item, 0)
         need = max(0, math.ceil(target - buffered - (each if producer.get('crafting') else 0)))
-        count = min(200, need, spendable.get(item, 0), planner.catalog.stack_sizes.get(item, 200))
+        # A furnace input is one native item stack.  A service visit may be
+        # committed while its producer is still consuming an earlier batch, so
+        # bound the additional delivery to the observed free space in that
+        # stack.  Consumption can only make this conservative bound safer
+        # before dispatch.  Without it, a 50-stack with five ore already
+        # present could request all 50 and reach the fair Lua transfer only to
+        # be rejected for insufficient insertable capacity.
+        stack_size = planner.catalog.stack_sizes.get(item, 200)
+        free_stack = max(0, stack_size - buffered)
+        count = min(200, need, spendable.get(item, 0), free_stack)
         if count:
             add(planner._transfer(source, item, count).steps[0])
     # Collect only a batch that the active planner already considers ready.
