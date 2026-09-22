@@ -165,6 +165,9 @@ class HierarchicalLoop(AgentLoop):
         print(f"[t={before.tick}] {self.memory.status}: {action} -> {outcome}", flush=True)
         return record
 
+    def _model_facts(self, snapshot: GameSnapshot) -> dict:
+        return snapshot.for_jev()
+
     def _record_extras(self) -> dict:
         return {}
 
@@ -357,7 +360,7 @@ class HierarchicalLoop(AgentLoop):
                 chosen = self._fallback_plan(plans)
                 self._decision = Decision(chosen.id, "deterministic")
             else:
-                facts = snapshot.for_jev()
+                facts = self._model_facts(snapshot)
                 if facts["factory"]:
                     receipts = facts["factory"].pop("receipts", {})
                     facts["factory"].pop("connectors", None)

@@ -48,6 +48,8 @@ def cli() -> None:
                    help="Opt-in bounded production choices; does not enable concurrent mutations or belts")
     p.add_argument("--furnace-output-buffers", action="store_true",
                    help="Opt-in paid burner-inserter output buffers; requires ready-work FLE")
+    p.add_argument("--furnace-input-belts", action="store_true",
+                   help="Opt-in owned drill/belt input routes; requires furnace output buffers")
     p.add_argument("--background-work", action="store_true",
                    help="Opt-in receipt-tracked crafting and research prefetch; requires ready-work FLE")
     p.add_argument("--target", choices=("bootstrap_mining", "iron_smelting", "steam_power",
@@ -86,6 +88,8 @@ def cli() -> None:
         or args.backend != "fle" or args.target == "bootstrap_mining"
     ):
         p.error("--background-work requires hierarchical FLE ready-work and a native production target")
+    if args.furnace_input_belts and not args.furnace_output_buffers:
+        p.error("--furnace-input-belts requires --furnace-output-buffers")
     if args.furnace_output_buffers and (
         args.controller != "hierarchical" or args.factory_scheduling != "ready-work"
         or args.backend != "fle" or args.target == "bootstrap_mining"
@@ -139,6 +143,10 @@ def cli() -> None:
                 from .buffer_controller import buffered_loop_type
 
                 loop_type = buffered_loop_type(loop_type)
+            if args.furnace_input_belts:
+                from .input_controller import input_loop_type
+
+                loop_type = input_loop_type(loop_type)
             loop = loop_type(make_backend(args.backend, resume=args.resume,
                                                  adopt_session=args.adopt_session), jev=client,
                                     target=args.target, policy=args.policy, checkpoint=args.checkpoint,

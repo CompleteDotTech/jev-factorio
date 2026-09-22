@@ -68,9 +68,10 @@ class BackgroundWorkLoop(HierarchicalLoop):
         # Test backends implement the same receipt protocol without game access.
         native = getattr(backend, "_factory", None)
         if native is not None:
+            from .backends import has_adapter
             from .backends.craft_jobs import CraftJobFactory
 
-            if not isinstance(native, CraftJobFactory):
+            if not has_adapter(native, CraftJobFactory):
                 backend._factory = CraftJobFactory(native)
         elif getattr(backend, "craft_jobs_supported", False) is not True:
             raise ValueError("Backend does not support native craft receipts")

@@ -9,6 +9,8 @@ from .skills import Plan, Step
 
 
 class OutputBufferMixin:
+    planner_type = OutputBufferPlanner
+
     def __init__(self, backend, jev=None, **options) -> None:
         if options.get("factory_scheduling") != "ready-work":
             raise ValueError("Output buffers require ready-work scheduling")
@@ -20,9 +22,10 @@ class OutputBufferMixin:
             raise ValueError("Output buffers require a native production catalog")
         native = getattr(backend, "_factory", None)
         if native is not None:
+            from .backends import has_adapter
             from .backends.output_buffers import OutputBufferFactory
 
-            if not isinstance(native, OutputBufferFactory):
+            if not has_adapter(native, OutputBufferFactory):
                 backend._factory = OutputBufferFactory(native)
         elif getattr(backend, "output_buffers_supported", False) is not True:
             raise ValueError("Backend does not support output-buffer evidence")
@@ -77,7 +80,7 @@ class OutputBufferMixin:
         boiler = snapshot.factory.get("entities", {}).get("utility:boiler", {})
         if boiler and boiler.get("fuel", {}).get("coal", 0) < 5:
             return [plan for plan in original if self._step_allowed(plan.steps[0], snapshot)], blocker
-        planner = OutputBufferPlanner(self.catalog, snapshot, self.memory.active_goal)
+        planner = self.planner_type(self.catalog, snapshot, self.memory.active_goal)
         # Burner maintenance is small and independent; background output locks
         # still control whether this particular coal action can be dispatched.
         for row in sources(snapshot).values():

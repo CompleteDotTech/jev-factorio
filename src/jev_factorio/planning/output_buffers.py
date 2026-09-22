@@ -113,7 +113,7 @@ class OutputBufferPlanner(ReadyWorkPlanner):
         for item, amount in list(sorted(self.targets.items()))[:32]:
             if self.snapshot.inventory.get(item, 0) >= amount:
                 continue
-            worker = OutputBufferPlanner(self.catalog, self.snapshot, self.goal,
+            worker = type(self)(self.catalog, self.snapshot, self.goal,
                                          self.collection_batch, self.max_candidates)
             worker.focus, worker.raw_targets = self.focus, dict(self.raw_targets)
             worker.materials = self.materials or {}

@@ -4,10 +4,11 @@ from __future__ import annotations
 import math
 
 from .state import GameSnapshot
-from . import output_buffers
+from . import output_buffers, input_routes
 
 COMMAND_FIELDS = {
     output_buffers.COMMAND: output_buffers.FIELDS,
+    input_routes.COMMAND: input_routes.FIELDS,
     "factory_bind": set(),
     "factory_explore": {"radius"},
     "factory_gather": {"resource", "quantity"},
@@ -26,11 +27,14 @@ EFFECTS = {
     "player_bound", "machine", "machine_recipe", "machine_input", "machine_fuel",
     "machine_output", "connection", "research_started", "researched", "research_progress",
     "crafting_idle", "rocket_ready", "rocket_parts", "rocket_launched", "produced", "transfer",
-    "explored", "powered", "craft_job_complete", *output_buffers.EFFECTS,
+    "explored", "powered", "craft_job_complete", *output_buffers.EFFECTS, *input_routes.EFFECTS,
 }
 
 
 def validate_command(action: str, parameters: dict) -> None:
+    if action == input_routes.COMMAND:
+        input_routes.validate(parameters)
+        return
     if action == output_buffers.COMMAND:
         output_buffers.validate(parameters)
         return
@@ -69,6 +73,10 @@ def connected(factory: dict, source: str, target: str, kind: str, fluid: str) ->
 
 def satisfied(effect: str, item: str, threshold: float, parameters: dict, snapshot: GameSnapshot,
               action: str = "") -> bool:
+    if effect == "input_component":
+        return action == input_routes.COMMAND and input_routes.component_complete(parameters, snapshot)
+    if effect == "input_flow":
+        return action == "factory_wait" and input_routes.flow_complete(parameters.get("role", ""), item, snapshot)
     if effect == "buffer_component":
         return action == output_buffers.COMMAND and output_buffers.component_complete(parameters, snapshot)
     if effect == "buffer_flow":
@@ -125,6 +133,14 @@ def satisfied(effect: str, item: str, threshold: float, parameters: dict, snapsh
 
 def allowed(action: str, parameters: dict, snapshot: GameSnapshot) -> bool:
     validate_command(action, parameters)
+    if "input_routes" in snapshot.factory:
+        try:
+            if not input_routes.permits(action, parameters, snapshot):
+                return False
+        except (ValueError, TypeError, KeyError):
+            return False
+    if action == input_routes.COMMAND:
+        return input_routes.allowed(parameters, snapshot)
     if action == output_buffers.COMMAND:
         return output_buffers.allowed(parameters, snapshot)
     if "output_buffers" in snapshot.factory:
