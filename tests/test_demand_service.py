@@ -134,6 +134,27 @@ def test_service_groups_same_cell_transfers_with_native_receipts_and_paid_inputs
     assert state == before
 
 
+def test_service_input_delivery_respects_observed_remaining_native_stack_capacity():
+    state, data, row, planner, first = visit_fixture()
+    data.stack_sizes['iron-ore'] = 50
+    state.inventory['iron-ore'] = 80
+    state.factory['entities'][row['source']]['input'] = {'iron-ore': 5}
+    # Deliberately demand more than a whole stack: the service visit must use
+    # the 45 slots the observed furnace can actually accept, not the nominal
+    # stack size.  The normal furnace may consume meanwhile, which only makes
+    # this value safer at dispatch.
+    planner.targets['iron-ore'] = 100
+
+    visit = service_visit(planner, first)
+
+    delivery = next(step for step in visit.steps
+                    if step.action == 'factory_insert'
+                    and step.parameters['item'] == 'iron-ore')
+    assert delivery.parameters['quantity'] == 45
+    assert delivery.costs == {'iron-ore': 45}
+    assert delivery.allowed(state)
+
+
 def test_service_keeps_background_single_step_and_never_spends_collection_forecast():
     state, data, row, planner, first = visit_fixture()
     state.factory['crafting_queue'] = 1
