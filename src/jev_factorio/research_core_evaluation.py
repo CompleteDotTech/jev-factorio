@@ -1,7 +1,7 @@
 """Analytic projection of verified logging-core and causal-controller evidence."""
 from __future__ import annotations
 
-from .research_events import EvidenceError, MixedTreatmentError, VerifiedRun, digest, text, utc
+from .research_events import EvidenceError, MixedTreatmentError, VerifiedRun, canonical, digest, text, utc
 from .research_evaluation import NON_WORK_ACTIONS, RunEvaluation, _duration, _usage
 
 
@@ -12,6 +12,7 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
     tables = {name: [] for name in ("events", "decisions", "model_calls", "actions",
                                     "milestones", "interventions")}
     observations, decisions, calls, actions, milestones = {}, {}, {}, {}, {}
+    goal_checks = {}
     sessions, worlds, traces, models = set(), set(), set(), set()
     problems = set()
     warnings = {"missing_initial_world_hashes", "missing_experiment_metadata"}
@@ -21,7 +22,7 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
     passive = {"run_started", "run_finished", "step_started", "step_finished", "step_failed",
                "candidate_set_created", "candidate_set_filtered", "plan_committed", "plan_failed",
                "plan_progress", "precondition_checked", "pending_expired", "checkpoint_written",
-               "goal_checked", "goal_activated", "observation_validated"}
+               "goal_activated", "observation_validated"}
 
     def identity(payload, field):
         value = payload.get(field)
@@ -29,7 +30,7 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
 
     def reference(payload, field):
         value = payload.get(field)
-        return None if value is None else "/".join(identity(payload, field))
+        return None if value is None else canonical(identity(payload, field)).decode("utf-8")
 
     for event in run.events:
         payload, kind, sequence = event["payload"], event["event_type"], event["sequence"]
@@ -135,6 +136,8 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
                 raise EvidenceError("Unmatched or duplicate causal action return")
             if payload.get("status") not in {"ok", "error"}:
                 raise EvidenceError("Invalid causal action return status")
+            if payload.get("action") != actions[key]["action"]:
+                raise EvidenceError("Causal action return changes action identity")
             actions[key].update(returned_sequence=sequence,
                                 duration_ms=_duration(payload))
             warnings.add("backend_acknowledgment_unavailable")
@@ -157,11 +160,17 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
             actions[key]["verification_count"] += 1
             if verified and not actions[key]["verified"]:
                 actions[key].update(verified=True, verified_sequence=sequence)
+        elif kind == "goal_checked":
+            if payload.get("status") == "ok" and payload.get("completed") is True:
+                goal_checks[(identity(payload, "observation_id"),
+                             text(payload.get("goal"), "goal"))] = sequence
         elif kind == "goal_completed":
             observation = observations.get(identity(payload, "observation_id"))
-            if observation is None or payload.get("verification_source") != "existing_goal_predicate":
-                raise EvidenceError("Causal milestone lacks its predicate observation")
             goal = text(payload.get("goal"), "goal")
+            checked = goal_checks.get((identity(payload, "observation_id"), goal))
+            if (observation is None or checked is None or checked < observation[0]
+                    or payload.get("verification_source") != "existing_goal_predicate"):
+                raise EvidenceError("Causal milestone lacks its predicate observation")
             if goal not in milestones:
                 milestones[goal] = {
                     "run_id": run_id, "goal": goal, "sequence": sequence,
@@ -230,6 +239,7 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
         "native_victory_event_observed": native_victory,
         "events": len(run.events), "segments": len(traces), "observations": len(observations),
         "decisions": len(decisions), "model_calls": len(calls),
+        "model_call_count_scope": "Recorded causal requests only; lifecycle logs do not capture calls.",
         "provider_errors": sum(call["status"] == "error" for call in calls.values()),
         "prepared_actions": len(actions),
         "returned_actions": sum(action["returned_sequence"] is not None for action in actions.values()),
@@ -244,7 +254,7 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
     }
     for kind in ("input", "output"):
         field = kind + "_tokens"
-        complete = all(call[field] is not None for call in calls.values())
+        complete = bool(traces) and all(call[field] is not None for call in calls.values())
         total = sum(call[field] or 0 for call in calls.values())
         summary[field] = total if complete else None
         summary[field + "_recorded"] = total

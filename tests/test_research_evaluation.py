@@ -473,7 +473,12 @@ def test_legacy_summary_and_cli_compatibility(tmp_path, capsys):
     path.write_text(json.dumps(record) + "\n")
     expected = {"session_id": "s", "world_kind": "mock", "target": "mining", "policy": "jev",
                 "evidence_class": "synthetic", "terminal_status": "running", "terminal_reason": None,
-                "records": 1, "model_calls": 1, "verified_actions": 1, "milestones": {},
+                "records": 1, "model_calls": 1, "verified_actions": None, "milestones": {},
+                "identified_verified_actions": 0, "verified_waits": 0, "identified_attempts": 0,
+                "legacy_records_present": True, "legacy_verified_action_records": 1,
+                "attempt_count_scope": "Unique IDs present in log, including carried checkpoint outcomes; not a full-campaign total",
+                "verification_latency_seconds": [], "unknown_verification_latencies": 0,
+                "observed_production_delta": None,
                 "native_victory_event_observed": False, "input_tokens": 5,
                 "token_usage_complete": True, "models": ["mock"]}
     assert summarize(path) == expected
@@ -483,8 +488,17 @@ def test_legacy_summary_and_cli_compatibility(tmp_path, capsys):
         cli([str(path), "--output-dir", str(tmp_path / "report")])
 
 
-def test_offline_evaluator_never_imports_game_or_provider(tmp_path):
-    path, _, _ = make_run(tmp_path)
+@pytest.mark.parametrize("format_kind", ["proposed", "legacy"])
+def test_offline_evaluator_never_imports_game_or_provider(tmp_path, format_kind):
+    if format_kind == "proposed":
+        path, _, _ = make_run(tmp_path)
+    else:
+        path = tmp_path / "legacy.jsonl"
+        path.write_text(json.dumps({
+            "session_id": "s", "world_kind": "mock", "target": "mining", "policy": "jev",
+            "requested_model": "mock", "controller": "hierarchical", "after_state": {},
+            "status": "running", "verified": True, "action": "mine",
+        }) + "\n")
     code = '''
 import builtins, sys
 original = builtins.__import__
@@ -494,9 +508,10 @@ def guarded(name, *args, **kwargs):
     return original(name, *args, **kwargs)
 builtins.__import__ = guarded
 from jev_factorio.evaluation import summarize
-assert summarize(sys.argv[1])["verified_actions"] == 1
+result = summarize(sys.argv[1])
+assert result["verified_actions"] == (1 if sys.argv[2] == "proposed" else None)
 '''
-    subprocess.run([sys.executable, "-c", code, str(path)], check=True, timeout=15)
+    subprocess.run([sys.executable, "-c", code, str(path), format_kind], check=True, timeout=15)
 
 
 def test_segment_restart_requires_provenance_not_clock_continuity(tmp_path):

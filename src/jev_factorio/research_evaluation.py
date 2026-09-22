@@ -288,7 +288,8 @@ def reduce_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -> Run
         warnings.add("completion_without_target_evidence")
     treatment = {key: manifest.get(key) for key in TREATMENT_FIELDS}
     summary = {
-        "schema": "jev-factorio.summary.v1", "run_id": run_id,
+        "schema": "jev-factorio.summary.v1", "source_format": "evaluator-proposed-v1",
+        "run_id": run_id,
         **{key: manifest.get(key) for key in ("experiment_id", "trial_id", "condition", "replicate", "pair_id")},
         "session_id": manifest["session_id"], "world_kind": world_kind,
         "world_seed": manifest["world"].get("seed"),

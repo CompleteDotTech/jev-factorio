@@ -11,8 +11,6 @@ from datetime import datetime, timezone
 from typing import Callable, Iterator
 from uuid import uuid4
 
-import requests
-
 DISPATCH_STAGES = {"dispatch", "entity_lookup", "approach", "transfer_rpc"}
 STAGES = DISPATCH_STAGES | {"observe", "pre_dispatch_observe", "post_dispatch_observe",
                             "selection", "verification", "planning"}
@@ -27,6 +25,8 @@ def utc_now() -> str:
 
 def error_code(error: BaseException) -> str:
     """Use a fixed vocabulary; never serialize messages, URLs, or class names."""
+    import requests
+
     for types, code in (
         ((KeyboardInterrupt, SystemExit), "interrupted"),
         ((TimeoutError, requests.Timeout), "timeout"),

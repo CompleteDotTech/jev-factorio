@@ -2,24 +2,49 @@
 
 ## Integration status
 
-This change is based on `47a07010d5ff4ba3401657f23631564cf69b09ad`.
-At inspection, main and the available branches did not contain the planned
-`research_log.py` writer, controller event instrumentation, or supervisor research
-provenance. The event contract below is therefore **an explicit proposed producer
-contract, not a claim of compatibility with an already merged writer**.
+The evaluator has separate readers for canonical logging-core runs and the
+original proposed producer contract documented below. The latter remains useful
+for explicit synthetic fixtures; it is not the canonical writer format. Legacy
+gameplay JSONL retains its separate compatibility path.
 
-Keep this PR in draft until the logging-core/controller/supervisor implementations
-can produce a captured fixture that passes these consumer tests. Do not silently
-accept differently named fields, hash algorithms, or schema versions. Adapt a
-versioned reader and add a producer/consumer integration test when those schemas
-are available. GitHub PR #3 (attempt evidence) separately modifies `evaluation.py`;
-its legacy accounting must be reconciled in `_summarize_legacy` when that PR lands.
-This document's “PR 4” is the implementation-plan stage, not GitHub issue numbering.
+`tests/test_research_core_evaluation.py` exercises the actual `ResearchLog`
+producer and instrumented offline controllers. These tests require the producer
+dependencies rather than skipping absent integration code. Mock runs remain
+synthetic evidence, not native gameplay or performance evidence.
 
-This evaluator is functional offline against the documented contract. It neither
-implements the writer nor modifies a running controller, supervisor, game world,
-checkpoint, provider, or environment file. Its fixtures are synthetic; they are
-not native gameplay or performance evidence.
+## Canonical logging-core source
+
+Canonical runs retain their original `manifest.json`, `events.jsonl`, and, for a
+sealed lifecycle, `integrity.json`. Evaluation reports
+`source_format: logging-core-v1`, validates with the producer verifier, and
+preserves original manifest/event objects, canonical hashes, and source-file
+hashes. It does not rewrite the producer's envelope into the proposed format.
+The producer's compact, sorted ASCII JSON encoding differs from the proposed
+contract's UTF-8 encoding for non-ASCII strings; the schema label alone cannot
+justify choosing a hash algorithm.
+
+`run_finished` with `outcome: returned` establishes a returned process lifecycle.
+It does not establish target completion. A target requires causal milestone
+evidence; backend operation return likewise does not prove postcondition success
+or explicit backend acknowledgment. Unsealed valid prefixes remain incomplete.
+Unknown session, world identity, experiment condition, seed, and initial-world
+hashes remain null. A configured mock backend alone does not invent an observed
+world identity. Missing model usage and resolved model identity remain unknown.
+Lifecycle-only logs without causal instrumentation cannot establish that no
+model calls occurred: their token totals remain null, even though the recorded
+subtotal is zero.
+Missing experiment/world provenance excludes canonical runs from benchmark
+cohorts while allowing inspection.
+
+Causal identifiers are scoped by the producer's `trace_id`. Derived event tables
+project that identity into their `segment_id` column for compatibility; this is
+not proof of a process restart or a resumed run segment.
+
+An integrity seal and matching hash chain detect accidental or unrehashable
+modification; they do not authenticate authorship or prevent a complete rehashed
+rewrite. Evaluation always reports `authenticated: false`. Native gameplay
+acceptance and externally trusted signatures or hash anchors are separate
+requirements.
 
 ## Commands
 
@@ -31,7 +56,10 @@ python -m jev_factorio.evaluation gameplay.jsonl
 
 A research input is a directory containing `manifest.json` and `events.jsonl`, or
 an event JSONL with a sibling manifest. A non-sibling manifest can be supplied for
-one input with `--manifest PATH`. Reading alone writes nothing:
+one proposed-contract input with `--manifest PATH`. Canonical logging-core inputs
+require their original sibling filenames and directory layout so the producer
+verifier can validate the manifest, event stream, and seal together. Reading
+alone writes nothing:
 
 ```sh
 python -m jev_factorio.evaluation runs/trial-001
