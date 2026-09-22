@@ -111,10 +111,32 @@ def test_background_completion_is_observed_once_and_correlated(tmp_path):
     assert completed[0]["receipt"] == receipt
     assert completed[0]["action_id"] == craft_action["action_id"]
     assert completed[0]["action_origin"] == "current_trace"
+    assert completed[0]["attempt_id"] == craft_action["attempt_id"]
     verified = [event for event in events(sink, "background_job_observed") if event["verified"]]
     assert len(verified) == 1 and verified[0]["receipt"] == receipt
     assert len(backend.calls) == 2
     assert len(events(sink, "observation")) == len(observations)
+    assert loop._trace._attempt_actions == {}
+
+
+def test_background_resume_keeps_attempt_without_inventing_action_id(tmp_path):
+    path = tmp_path / "checkpoint.json"
+    first_sink = Sink()
+    backend, first, _ = native_case("background", path, first_sink)
+    first.step()
+    attempt_id = first.memory.background_attempt["id"]
+    backend.complete()
+    resumed_sink = Sink()
+    resumed = CraftScenario(backend, policy="deterministic", target="automation_science",
+                            factory_scheduling="ready-work", checkpoint=str(path),
+                            resume_controller=True, tick_seconds=0, research_log=resumed_sink)
+    resumed.step()
+    completed = events(resumed_sink, "background_job_completed")
+    assert len(completed) == 1
+    assert completed[0]["attempt_id"] == attempt_id
+    assert completed[0]["action_id"] is None
+    assert completed[0]["action_origin"] == "checkpoint_or_external"
+    assert len(backend.calls) == 1
 
 
 def test_native_trace_failure_blocks_dispatch_and_subsequent_observation(tmp_path):
@@ -175,3 +197,28 @@ def test_dashboard_and_causal_trace_delegate_model_and_backend_once(tmp_path):
     monitor = Monitor(path)
     monitor.poll()
     assert monitor.snapshot()["source"]["invalid"] == 0
+
+
+@pytest.mark.parametrize("traced", [False, True])
+def test_dashboard_native_traced_dispatch_preserves_optional_capability(tmp_path, traced):
+    sink = Sink()
+    backend, loop, _ = native_case("background", tmp_path / "checkpoint.json", sink)
+    callbacks = []
+    if traced:
+        def execute_traced(action, parameters, trace):
+            callbacks.append(trace)
+            return backend.execute(action, parameters)
+        backend.execute_traced = execute_traced
+    path = tmp_path / "dashboard.jsonl"
+    with EventWriter(path) as writer:
+        attach(loop, writer)
+        assert hasattr(loop.backend, "execute_traced") is traced
+        loop.step()
+    assert len(backend.calls) == len(events(sink, "action_prepared")) == 1
+    assert len(callbacks) == int(traced)
+    if traced:
+        assert callbacks[0] == loop._diagnostic_trace
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert sum(record["kind"] == "action" for record in records) == 1
+    assert sum(record["kind"] == "dispatch_started" for record in records) == 1
+    assert sum(record["kind"] == "dispatch_returned" for record in records) == 1

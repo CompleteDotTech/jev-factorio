@@ -71,6 +71,14 @@ def test_fingerprint_detects_dirty_staged_untracked_and_committed_changes(repo):
     assert source_revision(root) != committed
 
 
+def test_nested_checkout_directory_is_not_a_repository_root(repo):
+    root, _ = repo
+    nested = root / "nested"
+    nested.mkdir()
+    assert source_revision(root) is not None
+    assert source_revision(nested) is None
+
+
 def test_ignored_secrets_and_untracked_runtime_do_not_change_revision(repo):
     root, git = repo
     runtime = root / "supervision"

@@ -1,6 +1,7 @@
 """Paired offline controller regression: metadata must not add gameplay calls."""
 from copy import deepcopy
 import json
+from uuid import UUID
 
 import pytest
 
@@ -9,6 +10,7 @@ from jev_factorio.controller import HierarchicalLoop
 from jev_factorio.jev_client import MockJevClient
 from jev_factorio.loop import AgentLoop
 from jev_factorio.provenance import CONTEXT_ENV
+from jev_factorio import controller, telemetry
 
 
 class CountingBackend(MockBackend):
@@ -42,6 +44,12 @@ def test_provenance_only_adds_context_fields(tmp_path, monkeypatch, hierarchical
                "code_revision": {"commit": "a" * 40, "source_sha256": "b" * 64}}
 
     def run(supervised):
+        identities = iter(range(1, 1000))
+        monkeypatch.setattr(controller, "uuid4", lambda: UUID(int=next(identities)))
+        monkeypatch.setattr(telemetry, "uuid4", lambda: UUID(int=next(identities)))
+        monkeypatch.setattr(controller, "utc_now", lambda: "2026-09-22T00:00:00+00:00")
+        monkeypatch.setattr(telemetry, "utc_now", lambda: "2026-09-22T00:00:00+00:00")
+        monkeypatch.setattr(telemetry.time, "perf_counter", lambda: 0.0)
         if supervised:
             monkeypatch.setenv(CONTEXT_ENV, json.dumps(context))
         else:
