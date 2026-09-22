@@ -70,6 +70,17 @@ def test_resume_command_preserves_world_and_controller(supervisor):
     assert "--resume" in command and "--resume-controller" in command
     assert command[command.index("--policy") + 1] == "hybrid"
     assert command[command.index("--target") + 1] == "rocket_launch"
+    assert "--run-dir" not in command
+
+
+def test_research_evidence_is_exclusive_per_gameplay_invocation(supervisor, tmp_path):
+    supervisor.config.research_dir = tmp_path / "research"
+    commands = [supervisor.gameplay_command(), supervisor.gameplay_command()]
+    paths = [Path(command[command.index("--run-dir") + 1]) for command in commands]
+    assert paths[0] != paths[1]
+    assert all(path.parent == supervisor.config.research_dir for path in paths)
+    assert not any(path.exists() for path in paths)
+    assert all("--resume" in command and "--resume-controller" in command for command in commands)
 
 
 def test_repair_prompt_preserves_fairness_on_every_attempt(supervisor, tmp_path):

@@ -52,6 +52,7 @@ class SupervisorConfig:
     tick_seconds: float = 1
     run_id: str | None = None
     run_manifest: Path | None = None
+    research_dir: Path | None = None
 
     def validate(self) -> None:
         if self.run_id is not None:
@@ -365,7 +366,7 @@ class Supervisor:
             self.sleep(min(self.config.poll_seconds, until - self.clock()))
 
     def gameplay_command(self) -> list[str]:
-        return [
+        command = [
             self.config.python, "-m", "jev_factorio", "--backend", "fle", "--resume",
             "--resume-controller", "--controller", "hierarchical", "--policy", "hybrid",
             "--model", "jev-1.13.0",
@@ -374,6 +375,11 @@ class Supervisor:
             "--tick-seconds", str(self.config.tick_seconds),
             "--log-file", str(self.config.state_dir / "gameplay.jsonl"),
         ]
+        if self.config.research_dir is not None:
+            command.extend(["--run-dir", str(
+                self.config.research_dir.resolve() / f"invocation-{uuid4()}"
+            )])
+        return command
 
     def watch_game(self) -> str:
         checkpoint = self.checkpoint()
@@ -802,6 +808,8 @@ def cli() -> None:
     parser.add_argument("--run-id", help="Shared research run ID; immutable once assigned")
     parser.add_argument("--run-manifest", type=Path,
                         help="Read an existing manifest's run_id without modifying it")
+    parser.add_argument("--research-dir", type=Path,
+                        help="Create a separate exclusive evidence directory for every gameplay invocation")
     parser.add_argument("--record-manual-intervention", type=Path,
                         help="Audit a human intervention JSON report while stopped; do not run gameplay")
     parser.add_argument("--checkpoint", type=Path, required=True)

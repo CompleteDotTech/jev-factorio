@@ -446,10 +446,17 @@ class Monitor:
         seen = view.setdefault("seen", [])
         if event["stage"] not in seen:
             seen.append(event["stage"])
+        record = data.get("record") if kind == "decision_recorded" else None
+        recorded = record if isinstance(record, dict) else {}
+        recorded_state = recorded.get("state")
+        recorded_state = recorded_state if isinstance(recorded_state, dict) else {}
         self.events.append({"id": f"{self.last_run}:{event['seq']}", "kind": kind,
                             "stage": event["stage"], "at": event.get("at", ""),
                             "time": event["time"], "duration_ms": data.get("duration_ms"),
-                            "action": data.get("action")})
+                            "action": data.get("action", recorded.get("action")),
+                            "tick": recorded.get("tick", recorded_state.get("tick")),
+                            "outcome": recorded.get("outcome"),
+                            "verified": recorded.get("verified")})
 
     def poll(self) -> None:
         with self.lock:

@@ -427,6 +427,47 @@ def test_legacy_missing_details_are_unavailable_not_zero_or_no_response(live):
     assert not errors
 
 
+def test_recorded_evidence_ticker_and_actions_do_not_claim_live_phase(live):
+    page, writer, url, errors = live
+    page.set_viewport_size({"width": 1920, "height": 1080})
+    page.goto(url + "/?studio=1")
+    seed(writer)
+    playwright.expect(page.locator("#thinking-status")).to_have_text("JEV is evaluating")
+    result = page.evaluate("""() => {
+        events.close();
+        const before = document.querySelector(".game-stage").getBoundingClientRect();
+        const snapshot = JSON.parse(JSON.stringify(latest));
+        snapshot.source.mode = "legacy";
+        Object.assign(snapshot.view, {request:null, plan:null, stage:7, seen:[7],
+          verified:true, pending:null, goal:"rocket_launch"});
+        snapshot.events = [{stage:7,kind:"decision_recorded",action:"mine_coal",
+          tick:123,verified:true,outcome:"Observed coal increase"}];
+        latest = snapshot;
+        render(snapshot);
+        refreshStatus();
+        const after = document.querySelector(".game-stage").getBoundingClientRect();
+        return {before:[before.x,before.y,before.width,before.height],
+                after:[after.x,after.y,after.width,after.height]};
+    }""")
+    assert result["before"] == result["after"]
+    playwright.expect(page.locator("#stage-7")).not_to_have_class("workflow-node active")
+    assert page.locator("#stage-7").evaluate("node => !node.classList.contains('active') && node.classList.contains('seen')")
+    playwright.expect(page.locator("#goals")).to_contain_text("Active target")
+    playwright.expect(page.locator("#candidate-table")).to_be_hidden()
+    playwright.expect(page.locator("#recorded-actions")).to_contain_text("mine_coal")
+    playwright.expect(page.locator("#event-log")).to_contain_text("tick 123")
+    playwright.expect(page.locator("#event-log")).to_contain_text("Observed coal increase")
+    playwright.expect(page.locator("#event-log")).not_to_contain_text("captured row")
+    playwright.expect(page.locator("#evidence-ticker")).to_be_visible()
+    assert page.locator("#evidence-ticker span").evaluate("node => getComputedStyle(node).animationName") == "none"
+    page.emulate_media(reduced_motion="no-preference")
+    page.locator("#evidence-ticker").focus()
+    assert page.locator("#evidence-ticker span").evaluate("node => getComputedStyle(node).animationPlayState") == "paused"
+    page.evaluate("notice('Telemetry unavailable')")
+    assert page.locator("#evidence-ticker").evaluate("node => getComputedStyle(node).visibility") == "hidden"
+    assert not errors
+
+
 def test_camera_device_switch_and_playback_failure_cleanup(live):
     page, writer, url, errors = live
     page.add_init_script(CAPTURE_FIXTURE)
