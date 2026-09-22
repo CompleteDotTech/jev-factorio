@@ -177,8 +177,10 @@ def cli() -> None:
             except (OSError, ValueError) as error:
                 p.error(str(error))
         if args.controller == "flat":
+            options["research_log"] = research
             loop = AgentLoop(make_backend(args.backend, resume=args.resume), **options)
         else:
+            options["research_log"] = research
             loop_type = HierarchicalLoop
             if args.background_work:
                 from .background import BackgroundWorkLoop
