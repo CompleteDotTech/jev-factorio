@@ -172,6 +172,53 @@ def test_terminal_checkpoint_does_not_launch(supervisor, status):
     assert supervisor.watch_game() == status
 
 
+def test_changed_code_with_pending_action_starts_repair_without_gameplay(supervisor, monkeypatch):
+    before = {"commit": "a" * 40, "source_sha256": "1" * 64}
+    after = {"commit": "b" * 40, "source_sha256": "2" * 64}
+    checkpoint = supervisor.checkpoint()
+    checkpoint.update(
+        pending={"dispatch": "prepared", "action": "factory_insert", "started_tick": 12},
+        active_plan={"id": "factory:factory_insert:recipe:copper-plate"},
+        step_index=0,
+        reservations={"factory:factory_insert:recipe:copper-plate": {"copper-ore": 3}},
+    )
+    original = json.dumps(checkpoint, sort_keys=True)
+    atomic_json(supervisor.config.checkpoint, checkpoint)
+    supervisor.save(code_revision=before)
+    monkeypatch.setattr(supervisor, "snapshot_revision", lambda: after)
+    supervisor.popen = lambda *args, **kwargs: pytest.fail("pending code transition launched gameplay")
+
+    assert supervisor.watch_game() == "checkpoint_reconciliation"
+    assert supervisor.state["repair_required"] is True
+    assert supervisor.state["incident"]["checkpoint"] == checkpoint
+    assert supervisor.state["code_revision"] == before
+    assert json.dumps(supervisor.checkpoint(), sort_keys=True) == original
+
+
+def test_manual_changed_code_with_pending_action_is_rejected_before_audit(supervisor, monkeypatch):
+    before = {"commit": "a" * 40, "source_sha256": "1" * 64}
+    after = {"commit": "b" * 40, "source_sha256": "2" * 64}
+    checkpoint = supervisor.checkpoint()
+    checkpoint.update(
+        pending={"dispatch": "prepared", "action": "factory_insert", "started_tick": 12},
+        active_plan={"id": "factory:factory_insert:recipe:copper-plate"},
+        step_index=0,
+        reservations={"factory:factory_insert:recipe:copper-plate": {"copper-ore": 3}},
+    )
+    atomic_json(supervisor.config.checkpoint, checkpoint)
+    supervisor.save(code_revision=before)
+    state = json.dumps(supervisor.state, sort_keys=True)
+    monkeypatch.setattr(supervisor, "snapshot_revision", lambda **kwargs: after)
+
+    with pytest.raises(ValueError, match="pending action requires reconciliation"):
+        supervisor.record_manual_intervention(
+            {"actor": "operator", "reason": "code_change", "evidence": ["reviewed"]}
+        )
+
+    assert json.dumps(supervisor.state, sort_keys=True) == state
+    assert supervisor.checkpoint() == checkpoint
+
+
 def test_hang_detected_and_process_reaped(supervisor):
     assert supervisor.watch_game() == "checkpoint_heartbeat_timeout"
     process = supervisor.process

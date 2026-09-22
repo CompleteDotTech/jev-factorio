@@ -238,6 +238,11 @@ class Supervisor:
             raise ValueError("Manual intervention requires nonempty evidence strings")
         before = self.state.get("code_revision")
         after = self.snapshot_revision(manual=True)
+        checkpoint = self.checkpoint()
+        if checkpoint.get("pending") and (before is None or after is None or before != after):
+            raise ValueError(
+                "Code provenance changed while a pending action requires reconciliation"
+            )
         segment = self.state["segment"] + 1
         previous_segment = self.state["segment_id"]
         if not self.transition("manual_intervention", {
@@ -411,7 +416,17 @@ class Supervisor:
         self.save(last_valid_checkpoint=checkpoint)
         if checkpoint["status"] != "running":
             return checkpoint["status"]
-        if not self.record_revision(self.snapshot_revision(), "gameplay_start",
+        revision = self.snapshot_revision()
+        if (checkpoint.get("pending") and
+                (self.state.get("code_revision") is None or revision is None
+                 or revision != self.state["code_revision"])):
+            # A write-ahead action can already have reached the game even when
+            # its dispatcher has not durably recorded a return.  A new source
+            # revision must therefore not resume the controller and consume
+            # its verification budget before repair accepts that revision.
+            self.begin_repair("checkpoint_reconciliation")
+            return "checkpoint_reconciliation"
+        if not self.record_revision(revision, "gameplay_start",
                                     actor_type="unknown", intervention_type="unattributed_change"):
             return "stopped"
         self.launch(self.gameplay_command(), "gameplay")
