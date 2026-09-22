@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark"><title>JEV · Mission Control</title>
+<meta name="color-scheme" content="dark"><meta name="theme-color" content="#272722"><title>JEV · Factorio Mission Control</title>
 <link rel="stylesheet" href="/styles.css"><script src="/app.js" defer></script>
 </head>
 <body>
 <header class="topbar">
-  <a class="brand" href="/" aria-label="JEV Mission Control home"><span class="brand-mark">j<span>e</span>v</span><span class="brand-caption">MISSION CONTROL<small>FACTORIO / AUTONOMOUS SYSTEMS</small></span></a>
+  <a class="brand" href="/" aria-label="JEV Mission Control home"><svg class="brand-gear" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path d="M13 2h6l1 4 3 1 4-2 3 5-3 3v5l3 3-3 5-4-2-3 2-1 4h-6l-1-4-3-2-4 2-3-5 3-3v-5l-3-3 3-5 4 2 3-1z"/><circle cx="16" cy="16" r="6"/></svg><span class="brand-mark">j<span>e</span>v</span><span class="brand-caption">MISSION CONTROL<small>FACTORIO / FACTORY OPERATIONS</small></span></a>
   <div class="top-context"><span class="eyebrow">SESSION</span><strong id="session">Awaiting telemetry</strong></div>
   <div class="top-context"><span class="eyebrow">POLICY</span><strong id="policy">—</strong></div>
   <div class="top-context deadline"><span class="eyebrow">CAMPAIGN CUTOFF</span><strong id="deadline">Not connected</strong></div>
@@ -21,7 +21,7 @@
 <main class="workspace">
   <aside class="panel thinking">
     <div class="panel-heading"><span class="eyebrow">01 / DECISION INTELLIGENCE</span><span class="mini-dot"></span></div>
-    <h1>Inside the decision.</h1><p class="muted intro">Observed inputs. Bounded choices.<br>Verified effects. Nothing invented.</p>
+    <h1>Factory intelligence.</h1><p class="muted intro">Observed inputs. Bounded choices.<br>Verified effects. Nothing invented.</p>
     <div class="model-status"><div class="signal" id="signal"><i></i><i></i><i></i><i></i><i></i></div><div><strong id="thinking-status">Waiting for an agent</strong><small id="model-detail">No model request observed</small></div></div>
     <div class="section-title"><h2>Current objective</h2><span class="tag">GOAL TREE</span></div>
     <div class="goal-tree" id="goals"></div>
@@ -34,7 +34,7 @@
 
   <section class="center-column">
     <section class="panel game-panel" aria-label="Game capture preview">
-      <div class="preview-heading"><div><span class="led" id="video-led"></span><strong>Live game window</strong><span class="mono" id="video-status">NO SOURCE</span></div><button class="text-button" id="fullscreen" aria-label="Fullscreen game preview">⛶ Fullscreen</button></div>
+      <div class="preview-heading"><div><span class="led" id="video-led"></span><strong>Live factory window</strong><span class="mono" id="video-status">NO SOURCE</span></div><button class="text-button" id="fullscreen" aria-label="Fullscreen game preview">⛶ Fullscreen</button></div>
       <div class="game-stage" id="game-stage">
         <video id="game-video" autoplay muted playsinline aria-label="User-selected game or OBS video feed"></video>
         <div class="capture-placeholder" id="capture-placeholder"><div class="capture-frame"><span>⌁</span></div><span class="eyebrow">YOUR FACTORY. FRONT AND CENTER.</span><h2>Bring the game into view.</h2><p>Capture the Factorio window or select your OBS Virtual Camera.<br>Video stays in this browser. No upload. No game control.</p><button class="primary" id="capture-main">＋ Choose game window</button><small>Choose the game itself—not this dashboard—to avoid a hall of mirrors.</small></div>
@@ -46,14 +46,14 @@
     </section>
 
     <section class="panel candidates-panel">
-      <div class="panel-heading"><div><span class="eyebrow">02 / BOUNDED PLAN SELECTION</span><h2>The options on the table.</h2></div><span class="tag" id="candidate-count">0 CANDIDATES</span></div>
+      <div class="panel-heading"><div><span class="eyebrow">02 / BOUNDED PLAN SELECTION</span><h2>Candidate work orders.</h2></div><span class="tag" id="candidate-count">0 CANDIDATES</span></div>
       <div class="table-scroll"><table><thead><tr><th scope="col">Candidate plan</th><th scope="col">Benefit / 2</th><th scope="col">Disruption / 2</th><th scope="col">Needs obs.</th><th scope="col">Choice p.</th><th scope="col">Conf. B / D</th><th scope="col">Utility</th><th scope="col">Decision</th></tr></thead><tbody id="candidates"><tr><td colspan="8" class="empty">Candidate evidence appears with the next model request.</td></tr></tbody></table></div>
       <div class="selection-summary"><span class="selection-icon">↳</span><div><span class="eyebrow">COMMITTED PLAN</span><strong id="selected-plan">No plan committed</strong><small id="selection-source">A model response does not itself authorize an action.</small></div><button id="inspect-plan" class="text-button">Inspect plan ↗</button></div>
     </section>
   </section>
 
   <aside class="right-column">
-    <section class="panel workflow-panel"><div class="panel-heading"><span class="eyebrow">03 / WORKFLOW</span><span class="tag" id="controller-status">UNKNOWN</span></div><h2>From intent to effect.</h2><p class="muted">Select a stage to inspect its evidence.</p><div id="workflow" class="workflow"></div><a class="source-link" href="https://github.com/CompleteDotTech/jev-factorio-agent/blob/main/docs/workflows/mmd/00-complete-workflow.mmd" target="_blank" rel="noreferrer">Canonical Mermaid workflow ↗</a></section>
+    <section class="panel workflow-panel"><div class="panel-heading"><span class="eyebrow">03 / WORKFLOW</span><span class="tag" id="controller-status">UNKNOWN</span></div><h2>The control circuit.</h2><p class="muted">Select a stage to inspect its evidence.</p><div id="workflow" class="workflow"></div><a class="source-link" href="https://github.com/CompleteDotTech/jev-factorio-agent/blob/main/docs/workflows/mmd/00-complete-workflow.mmd" target="_blank" rel="noreferrer">Canonical Mermaid workflow ↗</a></section>
     <section class="panel verification"><div class="section-title"><h2>Action verification</h2><span class="verification-mark" id="verified-icon">◇</span></div><strong id="verification-status">No pending action observed</strong><p id="verification-detail" class="muted">Returned ≠ verified. Only the controller's observed postcondition advances a step.</p><div class="verification-footer"><span id="pending-polls">POLL COUNT —</span><button class="text-button" id="inspect-pending">Evidence ↗</button></div></section>
     <section class="panel repair"><div class="section-title"><h2>Supervisor & repair</h2><span id="repair-state" class="tag">UNCONNECTED</span></div><p id="repair-detail" class="muted">Connect an existing supervisor state file to see repair status. This viewer cannot initiate repairs.</p></section>
   </aside>
