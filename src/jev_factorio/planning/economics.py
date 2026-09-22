@@ -158,6 +158,20 @@ class EconomicProduction:
         _, name, cost = min(candidates)
         return name, cost
 
+    def _machine_requires_item(self, name, item):
+        """Keep an optional producer from consuming its own first batch.
+
+        The normal planner can hand-craft an item needed to build a machine.
+        An economic investment for that same item must not turn the paid
+        hand-craft prerequisite into a recursive attempt to construct the
+        producer first.
+        """
+        recipe = self.catalog.recipes.get(name, {})
+        return any(
+            ingredient.get("type") == "item" and ingredient.get("name") == item
+            for ingredient in recipe.get("ingredients", [])
+        )
+
     def _need(self, item, amount, path=()):
         have = self.snapshot.inventory.get(item, 0)
         # Preserve immediate stock collection and all special buffer ownership
@@ -184,6 +198,8 @@ class EconomicProduction:
             if not selected:
                 return super()._need(item, amount, path)
             name, cost = selected
+            if self._machine_requires_item(name, item):
+                return super()._need(item, amount, path)
             work = self._workload(item, math.ceil(amount - have))
             # This is avoided handcraft-queue occupancy, not a promised wall-time
             # speedup: native assembly may be slower but overlaps other crafts.
