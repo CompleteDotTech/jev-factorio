@@ -82,7 +82,7 @@ class HierarchicalLoop(AgentLoop):
         self._attempt_clock: tuple[str, float] | None = None
         self._phases: list[dict] = []
         self.catalog = None
-        self._trace = CausalTrace(research_log, "hierarchical", jev)
+        self._trace = CausalTrace(research_log, "hierarchical", jev, provenance=self.provenance)
         if target in {"rocket_launch", "iron_smelting", "steam_power", "automation_science"} \
                 and hasattr(backend, "enable_factory"):
             self.catalog = backend.enable_factory()
@@ -317,7 +317,7 @@ class HierarchicalLoop(AgentLoop):
         with phase("verification", self._diagnostic_trace):
             verified = self._trace.verify(step, snapshot, plan_id=plan.id,
                                           index=self.memory.step_index, pending=pending,
-                                          phase="pending_poll")
+                                          phase="pending_poll", attempt_id=self.memory.attempt["id"])
         if verified:
             self._finish_attempt(snapshot)
             self.memory.status, self.memory.reason = "running", ""
@@ -382,7 +382,8 @@ class HierarchicalLoop(AgentLoop):
         if expired:
             if self._trace.enabled:
                 self._trace.emit("pending_expired", {
-                    **self._trace.pending_ref(plan.id, self.memory.step_index, pending),
+                    **self._trace.pending_ref(plan.id, self.memory.step_index, pending,
+                                              attempt_id=self.memory.attempt["id"]),
                     "polls": pending["polls"], "timeout_ticks": step.timeout_ticks})
             if step.action in {"idle", "factory_wait"}:
                 self._finish_attempt(snapshot, "wait_expired")
@@ -547,7 +548,7 @@ class HierarchicalLoop(AgentLoop):
                 outcome = self._trace.dispatch(
                     dispatch, step.action, parameters=step.parameters,
                     plan_id=plan.id, step_index=index, pending=self.memory.pending,
-                    checkpointed=self.checkpoint is not None)
+                    checkpointed=self.checkpoint is not None, attempt_id=self.memory.attempt["id"])
         except ResearchLogError:
             # A failed recorder is not an ambiguous backend return and must not
             # be swallowed by the normal dispatch-error handling.
@@ -565,7 +566,8 @@ class HierarchicalLoop(AgentLoop):
                                 str(outcome) + "; pending retained for reconciliation", after)
         with phase("verification", self._diagnostic_trace):
             verified = self._trace.verify(step, after, plan_id=plan.id, index=index,
-                                          pending=self.memory.pending, phase="post_dispatch")
+                                          pending=self.memory.pending, phase="post_dispatch",
+                                          attempt_id=self.memory.attempt["id"])
         if verified:
             self._finish_attempt(after)
             self.memory.release(plan.id)

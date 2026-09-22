@@ -55,7 +55,7 @@ class AgentLoop:
         self.provenance = gameplay_context()
         self.backend = backend
         self.jev = jev or make_client()
-        self._trace = CausalTrace(research_log, "flat", self.jev)
+        self._trace = CausalTrace(research_log, "flat", self.jev, provenance=self.provenance)
         self._decision_client = self._trace.client(self.jev)
         self.confidence_floor = confidence_floor
         self.tick_seconds = tick_seconds

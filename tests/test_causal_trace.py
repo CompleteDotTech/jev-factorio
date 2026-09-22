@@ -5,6 +5,8 @@ import json
 import sys
 from contextlib import redirect_stdout
 from dataclasses import asdict
+from itertools import count
+from uuid import UUID
 
 import pytest
 import requests
@@ -75,9 +77,6 @@ def run_case(directory, controller, policy, mode, enabled, monkeypatch):
     options = {"log_file": str(legacy), "tick_seconds": 0}
     if enabled:
         options["research_log"] = sink
-    loop = (AgentLoop(backend, client, **options) if controller == "flat" else
-            HierarchicalLoop(backend, client, policy=policy, target="bootstrap_mining",
-                             checkpoint=str(checkpoint), **options))
     written, records, failure = [], [], None
     original = CampaignMemory.save
 
@@ -87,6 +86,17 @@ def run_case(directory, controller, policy, mode, enabled, monkeypatch):
 
     stdout = io.StringIO()
     with monkeypatch.context() as patch, redirect_stdout(stdout):
+        import jev_factorio.controller as controller_module
+        import jev_factorio.telemetry as telemetry
+        identities = count(1)
+        patch.setattr(controller_module, "uuid4", lambda: UUID(int=next(identities)))
+        patch.setattr(telemetry, "uuid4", lambda: UUID(int=next(identities)))
+        patch.setattr(controller_module, "utc_now", lambda: "2026-09-22T00:00:00+00:00")
+        patch.setattr(telemetry, "utc_now", lambda: "2026-09-22T00:00:00+00:00")
+        patch.setattr(telemetry.time, "perf_counter", lambda: 100.0)
+        loop = (AgentLoop(backend, client, **options) if controller == "flat" else
+                HierarchicalLoop(backend, client, policy=policy, target="bootstrap_mining",
+                                 checkpoint=str(checkpoint), **options))
         patch.setattr(CampaignMemory, "save", save)
         for _ in range(40):
             if getattr(loop, "terminal", False):
@@ -430,14 +440,14 @@ def test_programmatic_legacy_path_alias_cannot_corrupt_sink(tmp_path, controller
     with ResearchLog(tmp_path / "run", RunConfiguration("mock", "hierarchical", "jev")) as sink:
         alias = tmp_path / "alias.jsonl"
         alias.hardlink_to(tmp_path / "run/events.jsonl")
-        with pytest.raises(ValueError, match="separate"):
+        with pytest.raises(ValueError, match="overwrite"):
             controller(Backend(), Client(), research_log=sink, log_file=str(alias))
     assert verify_run(tmp_path / "run")["complete"]
 
 
 def test_programmatic_checkpoint_cannot_replace_manifest(tmp_path):
     with ResearchLog(tmp_path / "run", RunConfiguration("mock", "hierarchical", "jev")) as sink:
-        with pytest.raises(ValueError, match="separate"):
+        with pytest.raises(ValueError, match="overwrite"):
             HierarchicalLoop(Backend(), Client(), research_log=sink,
                              checkpoint=str(tmp_path / "run/manifest.json"), resume_controller=True)
     assert verify_run(tmp_path / "run")["complete"]

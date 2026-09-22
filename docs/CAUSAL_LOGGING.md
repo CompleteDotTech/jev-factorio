@@ -5,7 +5,7 @@
 Opt-in tracing records the existing flat and hierarchical controller execution;
 it does not introduce a new policy, observation, retry, sleep, checkpoint field,
 or gameplay verification rule. Existing `--log-file` records, returned dictionaries,
-stdout, and schema-1 checkpoints retain their formats.
+stdout, and current checkpoint formats retain their behavior.
 
 ```sh
 python -m jev_factorio --controller hierarchical --backend mock \
@@ -15,29 +15,27 @@ python -m jev_factorio --controller hierarchical --backend mock \
 ```
 
 Use fresh paths. `--run-dir` is never appended to, resumed, truncated, or repaired.
-The directory contains `manifest.json` and `events.jsonl`; neither may alias a
+The directory contains `manifest.json`, `events.jsonl`, and `integrity.json`; none may alias a
 legacy log or checkpoint. CLI validation runs before backend initialization.
 Without `--run-dir`, there is no research-file creation, research clock sampling,
 trace UUID allocation, or additional backend/model call. Trace IDs use UUIDs,
 not the gameplay random-number generator.
 
-The inspected base (`55b68d5fd06d32ec06f2b096a347093f34ec1cb3`) did not contain
-the proposed PR-1 logging core. A minimal `research_log.py` sink is therefore
-included as a prerequisite. The PR is based on the later fair-controls merge
-`47a07010d5ff4ba3401657f23631564cf69b09ad`; its controller files are unchanged
-from the inspected base, and all fair-control/backend updates are preserved.
-It is **not** the full experiment-provenance design:
-Git/environment/world fingerprints, supervisor segments, external hash anchoring,
-replay, analytical exports, and experiment aggregation remain outside this PR.
+The producer uses the canonical research core from PR #5, including its manifest,
+integrity seal, strict verifier, credential filtering, and output-alias guards.
+The attempt diagnostics from PR #3 and supervisor context from PR #7 compose
+with this instrumentation. External hash anchoring, replay, analytical exports,
+and experiment aggregation remain separate consumers.
 Controllers depend on the small synchronous `EventSink.emit(event_type, payload)`
-protocol so a separate logging core can replace this sink without changing policy.
+protocol without changing policy.
 
 ## Event contract
 
 Every disk event has schema `jev-factorio.event.v1`, run ID, contiguous sequence,
 UTC, process monotonic time, type, payload, previous hash, and its own hash. The
 manifest's canonical SHA-256 anchors the first event. Hashes cover sorted-key,
-compact UTF-8 JSON excluding the event's own hash. Payloads are detached copies;
+compact ASCII-escaped JSON excluding the event's own hash, using the canonical
+core's domain-prefixed SHA-256 rules. Payloads are detached copies;
 a custom sink cannot mutate the controller's state, requests, or answers.
 
 | Event | Captured evidence |
@@ -55,6 +53,7 @@ a custom sink cannot mutate the controller's state, requests, or answers.
 | `action_prepared`, `action_returned` | Write-ahead intent and actual call result/error, parameters, plan/step, and action identity. |
 | `verification`, `pending_expired` | Existing predicate result and pending-work budget expiration, not tool success text. |
 | `goal_checked`, `goal_activated`, `goal_completed` | Existing goal predicate calls and actual milestone transitions. |
+| `background_job_admitted`, `background_job_observed`, `background_job_completed` | Existing receipt admission and observation result, with durable attempt identity where available. |
 | `run_started`, `run_finished` | Sink lifecycle; finishing a trace is not winning the game. |
 
 `observation` records are initially labelled `not_yet_validated`. An invalid
@@ -85,13 +84,18 @@ already-existing idle calls are recorded separately as `role=mock_clock_advance`
 with `related_action_id` pointing to the pending action. They are not retries
 of the pending mutation.
 
-Checkpoint schema 1 is unchanged. After reconstruction, the old action ID is not
+Checkpoint schema 2 retains the existing durable attempt identity. After reconstruction, the old action ID is not
 invented: verification uses `action_id=null`, `action_origin=checkpoint_or_external`
 and the captured plan, step index, and started tick. Use a **new** run directory
-when restarting. This trace alone does not prove globally unique attempts across
-processes, authorize replay, or replace native transfer receipts. The separate
-attempt-evidence PR #3 changes checkpoint schema and overlaps controller code;
-reconcile that change explicitly rather than merging one implementation over it.
+when restarting. The optional `attempt_id` joins the existing checkpoint identity
+across reconstruction without inventing an old trace-local action ID. Legacy
+background work without attempt evidence remains unknown. Trace evidence never
+authorizes replay or replaces native transfer receipts.
+
+`supervisor_provenance` carries a detached copy of the validated context frozen
+when the controller is constructed: supervised run, segment, execution, and code
+revision. These IDs remain separate from the canonical research run ID. The
+supervisor audit remains a separate journal, not part of the research hash chain.
 
 ## Timing and behavior equivalence
 
@@ -130,7 +134,7 @@ existing state/goal updates and checkpoint
 Every built-in sink event is flushed and fsynced before `emit` returns. On POSIX,
 new directory entries are fsynced at initialization, including newly created
 parents. Python offers no portable Windows directory-fsync equivalent; the manifest
-reports `directory_fsync=false` there. Actual persistence still depends on the
+reports `durability=file-fsync-only` there. Actual persistence still depends on the
 filesystem/device honoring fsync. No cross-process/shared-writer use is supported.
 
 A preparation logging failure prevents the next mutation. A logging failure after
@@ -154,7 +158,7 @@ python -c 'from jev_factorio.research_log import verify_run; print(verify_run("/
 This verifier is read-only. Chaining detects modified/reordered/missing interior
 records and partial trailing lines. An entirely removed suffix or a rewritten
 whole chain cannot be authenticated without an independently trusted head. A
-`clean_finish` footer means trace closure only; inspect its outcome and controller
+`complete` verifier result means sealed trace closure only; inspect its outcome and controller
 status separately.
 
 ## Secrets and publication
@@ -176,19 +180,20 @@ unchanged, so these additional research-log redaction rules do not retrofit old 
 `jev`, `deterministic`, and `hybrid` policies under normal, abstaining, malformed,
 and timeout responses. Comparisons include exact checkpoint-write bytes, legacy JSONL,
 stdout, returned records, ordered backend calls, model requests, and final snapshots.
+Diagnostic UUIDs and clocks are fixed independently for each test run; production
+attempt identity and timing generation remain unchanged.
 Tests also cover durable pre-dispatch intent, recorder/checkpoint faults, lost
 acknowledgments and observations, resume without replay, false success text,
 precondition changes, permanent/transient HTTP failures, malformed answers, bounded
 candidate requests, factory execute parameters, timing isolation, interrupt handling,
 redaction, and aliased output paths.
 
-An additional implementation-time subprocess comparison against the untouched
-pinned base source matched all 16 scenarios with instrumentation both disabled and
-enabled. This is stronger than only comparing the two modes of the modified code,
-but remains synthetic validation. No live Factorio/provider calls, world reset,
-active-campaign changes, deployment, or supervisor intervention were performed.
+`tests/test_causal_native_integration.py` exercises the offline native-contract
+fixtures for background work, input belts, output buffers, the composed mixin
+stack, fault barriers, and simultaneous dashboard logging. No live
+Factorio/provider calls, world reset, active-campaign changes, deployment, or
+supervisor intervention are part of these tests.
 
-The local workspace was assembled from complete, Git-blob-verified source copies;
-it was not a full checkout. Report local selected tests separately from the full
-repository Python 3.10/3.12 CI suite. Passing offline tests does not establish native
+Report local tests separately from the hosted Python 3.10/3.12 and Chromium gates.
+Passing offline tests does not establish native
 rocket completion, provider latency, or durability under every power-loss scenario.

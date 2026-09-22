@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict
+from copy import deepcopy
 from functools import wraps
 from typing import Callable, TypeVar
 from uuid import uuid4
@@ -55,7 +56,7 @@ def traced_step(method):
 
 
 class CausalTrace:
-    def __init__(self, sink: EventSink | None, controller: str, client=None):
+    def __init__(self, sink: EventSink | None, controller: str, client=None, *, provenance=None):
         self.sink, self.controller = sink, controller
         self.enabled = sink is not None
         self.trace_id = uuid4().hex if self.enabled else None
@@ -65,6 +66,8 @@ class CausalTrace:
         self.decision_id = self.observation_id = self.model_call_id = self.action_id = None
         self._session_id = self._world_kind = self._tick = None
         self._pending_key = self._pending_action_id = None
+        self._attempt_actions: dict[str, str] = {}
+        self.provenance = deepcopy(provenance or {})
         self._secrets = tuple(value for name in ("api_key", "api_token")
                               if isinstance(value := getattr(client, name, None), str) and value) \
             if self.enabled else ()
@@ -94,7 +97,8 @@ class CausalTrace:
                         "observation_id": self.observation_id,
                         "model_call_id": self.model_call_id, "action_id": self.action_id,
                         "session_id": self._session_id, "world_kind": self._world_kind,
-                        "factorio_tick": self._tick, **payload}
+                        "factorio_tick": self._tick, "supervisor_provenance": self.provenance,
+                        **payload}
             # Even a custom sink must not retain or mutate live controller data.
             self.sink.emit(event_type, safe_payload(envelope, self._secrets))
         except Exception:
@@ -151,11 +155,12 @@ class CausalTrace:
     def client(self, client):
         return TracedClient(client, self) if self.enabled and client is not None else client
 
-    def pending_ref(self, plan_id: str, index: int, pending: dict) -> dict:
+    def pending_ref(self, plan_id: str, index: int, pending: dict, *, attempt_id=None) -> dict:
         key = (plan_id, index, pending["started_tick"], pending["action"])
         known = key == self._pending_key
         return {"action_id": self._pending_action_id if known else None,
                 "action_origin": "current_trace" if known else "checkpoint_or_external",
+                "attempt_id": attempt_id,
                 "plan_id": plan_id, "step_index": index,
                 "started_tick": pending["started_tick"]}
 
@@ -164,7 +169,7 @@ class CausalTrace:
 
     def dispatch(self, operation: Callable[[], T], action: str, *, parameters=None,
                  plan_id=None, step_index=None, pending=None, checkpointed=False,
-                 role="plan") -> T:
+                 role="plan", attempt_id=None) -> T:
         if not self.enabled:
             return operation()
         action_id = self.identity("action")
@@ -172,23 +177,31 @@ class CausalTrace:
         related = self._pending_action_id if role == "mock_clock_advance" else None
         facts = {"action_id": action_id, "action": action, "parameters": parameters or {},
                  "plan_id": plan_id, "step_index": step_index, "role": role,
+                 "attempt_id": attempt_id,
                  "related_action_id": related}
         self.emit("action_prepared", {**facts, "checkpointed": checkpointed,
                                       "pending": pending, "dispatch": "prepared"})
         if pending is not None and role == "plan":
             self._pending_key = (plan_id, step_index, pending["started_tick"], action)
             self._pending_action_id = action_id
+            if attempt_id is not None:
+                self._attempt_actions[attempt_id] = action_id
         return self.call("action_returned", operation, details=facts,
                          result=lambda outcome: {"outcome": outcome})
 
     def verify(self, step, snapshot, *, plan_id: str, index: int,
-               pending: dict, phase: str) -> bool:
+               pending: dict, phase: str, attempt_id=None) -> bool:
         if not self.enabled:
             return step.satisfied(snapshot)
         return self.call("verification", lambda: step.satisfied(snapshot),
-                         details={**self.pending_ref(plan_id, index, pending),
+                         details={**self.pending_ref(plan_id, index, pending, attempt_id=attempt_id),
                                   "phase": phase, "predicate": asdict(step)},
                          result=lambda satisfied: {"verified": satisfied})
+
+    def attempt_ref(self, attempt_id) -> dict:
+        action_id = self._attempt_actions.get(attempt_id)
+        return {"attempt_id": attempt_id, "action_id": action_id,
+                "action_origin": "current_trace" if action_id else "checkpoint_or_external"}
 
 
 class TracedClient:
