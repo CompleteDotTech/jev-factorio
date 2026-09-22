@@ -271,3 +271,13 @@ cyclic production raises an error instead of pretending to solve the cycle.
 - Independent question semantics: https://docs.typesafe.ai/primitives
 - Current model/request limits: https://docs.typesafe.ai/models
 - Existing project backend architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
+## Partial native gather recovery
+
+An unacknowledged gather is not replayed. Reconciliation requires a measured
+inventory increase above its committed starting quantity, still below its target.
+The controller retains a typed `gather_partial_progress` history receipt before
+clearing that plan. A matching session, site, target, observation and strictly
+smaller remainder can then receive a stable `:remainder-quantity:N` plan identity.
+Original retry counters are preserved; unchanged commands and exhausted remainder
+identities remain blocked. Missing or mismatched evidence fails closed. The same
+candidate compilation rule applies to serial and ready-work scheduling.

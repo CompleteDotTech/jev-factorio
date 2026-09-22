@@ -11,7 +11,7 @@ import math
 import time
 from copy import deepcopy
 from uuid import uuid4
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from .causal_trace import CausalTrace, traced_step
@@ -305,14 +305,17 @@ class HierarchicalLoop(AgentLoop):
         pending = self.memory.pending or {}
         parameters = step.parameters or {}
         item = parameters.get("resource")
+        requested = parameters.get("quantity")
         observed = snapshot.inventory.get(item, 0) if isinstance(item, str) else 0
         return bool(
             pending.get("dispatch") in {"prepared", "ambiguous"}
             and type(pending.get("polls")) is int and pending["polls"] > 0
             and step.action == "factory_gather" and step.effect == "inventory"
             and item == step.item and item
+            and type(requested) is int and requested > 0
             and isinstance(observed, (int, float)) and not isinstance(observed, bool)
-            and math.isfinite(observed) and 0 < observed < step.threshold
+            and math.isfinite(observed)
+            and 0 <= step.threshold - requested < observed < step.threshold
         )
 
     def _verify_pending(self, snapshot: GameSnapshot) -> dict:
@@ -352,6 +355,12 @@ class HierarchicalLoop(AgentLoop):
             return self._record(snapshot, "reconcile", reason)
         if self._partial_unacknowledged_gather(step, snapshot):
             quantity = snapshot.inventory[step.item]
+            self.memory.event(
+                "gather_partial_progress", session_id=snapshot.session_id,
+                plan=plan.to_dict(), step_index=self.memory.step_index,
+                observed_inventory=quantity, tick=snapshot.tick,
+                started_tick=pending["started_tick"], attempt_id=self.memory.attempt["id"],
+            )
             reason = (
                 f"Observed {quantity} {step.item} below committed inventory threshold "
                 f"{step.threshold} after an unacknowledged native gather; replan without "
@@ -407,6 +416,48 @@ class HierarchicalLoop(AgentLoop):
                                  role="mock_clock_advance")
         return self._record(snapshot, "observe", "Waiting for the in-flight postcondition")
 
+    def _gather_remainder_plan(self, plan: Plan, snapshot: GameSnapshot) -> Plan:
+        if len(plan.steps) != 1 or plan.steps[0].action != "factory_gather":
+            return plan
+        step = plan.steps[0]
+        requested = (step.parameters or {}).get("quantity")
+        observed = snapshot.inventory.get(step.item)
+        if (type(requested) is not int or requested <= 0
+                or type(observed) is not int or observed < 0
+                or requested != step.threshold - observed):
+            return plan
+        for receipt in reversed(self.memory.history):
+            if receipt.get("kind") != "gather_partial_progress":
+                continue
+            try:
+                original = Plan.from_dict(receipt["plan"])
+                previous = original.steps[0]
+                quantity = (previous.parameters or {}).get("quantity")
+                valid = (
+                    receipt.get("session_id") == snapshot.session_id == self.memory.session_id
+                    and len(original.steps) == 1 and type(receipt.get("step_index")) is int
+                    and receipt["step_index"] == 0
+                    and type(receipt.get("tick")) is int
+                    and type(receipt.get("started_tick")) is int
+                    and 0 <= receipt["started_tick"] <= receipt["tick"] <= snapshot.tick
+                    and isinstance(receipt.get("attempt_id"), str) and bool(receipt["attempt_id"])
+                    and type(receipt.get("observed_inventory")) is int
+                    and receipt["observed_inventory"] == observed
+                    and original.goal == plan.goal
+                    and previous.action == step.action and previous.effect == step.effect == "inventory"
+                    and previous.item == step.item
+                    and previous.threshold == step.threshold
+                    and type(quantity) is int and requested < quantity
+                    and 0 <= previous.threshold - quantity < observed < previous.threshold
+                    and (previous.parameters or {}).get("resource") == step.item
+                    and original.id in {plan.id, f"{plan.id}:remainder-quantity:{quantity}"}
+                )
+            except (KeyError, TypeError, ValueError, AttributeError, IndexError):
+                continue
+            if valid:
+                return replace(plan, id=f"{plan.id}:remainder-quantity:{requested}")
+        return plan
+
     def _compile_candidates(self, snapshot: GameSnapshot) -> tuple[list[Plan], str]:
         if self.catalog is not None and self.memory.active_goal in {
             "rocket_launch", "iron_smelting", "steam_power", "automation_science", "bootstrap_mining"
@@ -414,11 +465,14 @@ class HierarchicalLoop(AgentLoop):
             if self.factory_scheduling == "ready-work":
                 from .planning.ready_work import compile_ready_factory
 
-                return compile_ready_factory(self.memory.active_goal, snapshot, self.catalog)
-            from .planning.factory import compile_factory
+                plans, blocker = compile_ready_factory(self.memory.active_goal, snapshot, self.catalog)
+            else:
+                from .planning.factory import compile_factory
 
-            return compile_factory(self.memory.active_goal, snapshot, self.catalog)
-        return compile_plans(self.memory.active_goal, snapshot)
+                plans, blocker = compile_factory(self.memory.active_goal, snapshot, self.catalog)
+        else:
+            plans, blocker = compile_plans(self.memory.active_goal, snapshot)
+        return [self._gather_remainder_plan(plan, snapshot) for plan in plans], blocker
 
     def _fallback_plan(self, plans: list[Plan]) -> Plan:
         if self.factory_scheduling == "ready-work" and self.catalog is not None:
