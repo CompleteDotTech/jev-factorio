@@ -173,7 +173,7 @@ fair.discover_mine_target = function(item, center, radius)
     -- campaign already generated, but it never changes the player's cursor or
     -- controls.  The later fair harvesting path walks to the returned entity
     -- and independently verifies normal reach and cursor selection.
-    fair.actor()
+    local player = fair.actor()
     assert(type(item) == "string", "Mining item must be a string")
     assert(type(center) == "table" and type(center.x) == "number"
         and type(center.y) == "number", "Mining search center is invalid")

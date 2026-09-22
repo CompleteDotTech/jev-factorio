@@ -134,10 +134,13 @@ def test_generated_terrain_discovery_does_not_select_or_control_the_player(fair_
     fair_runtime.execute("""
         resource.position = {x = 512, y = 0}
         selection_updates = 0
-        player.update_selected_entity = function()
+        native_player = player
+        native_player.update_selected_entity = function()
             selection_updates = selection_updates + 1
-            player.selected = resource
+            native_player.selected = resource
         end
+        game.get_player = function() return native_player end
+        player = nil
         discovered = storage.fair.discover_mine_target("coal", {x = 0, y = 0}, 1024)
         assert(discovered.name == "coal")
         assert(discovered.position.x == 512 and discovered.position.y == 0)
