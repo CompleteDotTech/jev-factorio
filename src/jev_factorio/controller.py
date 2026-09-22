@@ -320,16 +320,18 @@ class HierarchicalLoop(AgentLoop):
             and 0 <= step.threshold - requested < observed < step.threshold
         )
 
-    def _partial_unacknowledged_transfer(self, plan: Plan, step,
-                                        snapshot: GameSnapshot) -> dict | None:
-        """Return a durably evidenced partial native transfer, if and only if safe.
+    def _unacknowledged_transfer_receipt(self, plan: Plan, step,
+                                         snapshot: GameSnapshot) -> dict | None:
+        """Return a durably evidenced incomplete native transfer, if and only if safe.
 
         A receipt is recorded before the Lua transfer endpoint reports a partial
         insertion as an error.  It proves that a bounded amount was paid, but it
         is deliberately not a successful step: the controller must fail this
         plan and replan from the observed world instead of retrying it.  This
         gate is intentionally limited to the original ambiguous FLE attempt,
-        its live machine identity, and its exact receipt.
+        its live machine identity, and its exact receipt. A zero receipt is
+        admissible only when all source material reserved by the pending plan is
+        still observed, proving that the failed transfer left no durable effect.
         """
         pending, attempt = self.memory.pending or {}, self.memory.attempt
         parameters = step.parameters or {}
@@ -368,10 +370,25 @@ class HierarchicalLoop(AgentLoop):
             and receipt.get("item") == item
             and receipt.get("extracting") is (step.action == "factory_extract")
             and receipt.get("unit_number") == expected_unit
-            and type(quantity) is int and 0 < quantity < requested
+            and type(quantity) is int and 0 <= quantity < requested
             and type(receipt_tick) is int and receipt_tick >= attempt.get("started_tick", -1)
         ):
             return None
+        if quantity == 0:
+            if step.action == "factory_insert":
+                source_retained = (
+                    step.costs == {item: requested}
+                    and self.memory.reservations.get(plan.id) == step.costs
+                    and snapshot.inventory.get(item, 0) >= requested
+                )
+            else:
+                source_retained = (
+                    not step.costs
+                    and self.memory.reservations.get(plan.id) == {}
+                    and machine.get("output", {}).get(item, 0) >= requested
+                )
+            if not source_retained:
+                return None
         return {"quantity": quantity, "receipt_tick": receipt_tick}
 
     def _prepared_transfer_never_entered_rpc(self, plan: Plan, step,
@@ -542,22 +559,32 @@ class HierarchicalLoop(AgentLoop):
                 self._clear_plan()
             self._refresh_goals(snapshot)
             return self._record(snapshot, "verify", "Observed expected postcondition", verified=True)
-        partial_transfer = self._partial_unacknowledged_transfer(plan, step, snapshot)
-        if partial_transfer is not None:
-            quantity = partial_transfer["quantity"]
-            reason = (
-                f"Observed {quantity} of requested {step.parameters['quantity']} "
-                f"{step.parameters['item']} in the exact native transfer receipt; "
-                "fail this plan and replan without replaying the ambiguous dispatch"
-            )
+        incomplete_transfer = self._unacknowledged_transfer_receipt(plan, step, snapshot)
+        if incomplete_transfer is not None:
+            quantity = incomplete_transfer["quantity"]
+            if quantity == 0:
+                reason = (
+                    f"Observed zero of requested {step.parameters['quantity']} "
+                    f"{step.parameters['item']} in the exact native transfer receipt and "
+                    "all reserved source material retained; fail this plan and replan "
+                    "without replaying the ambiguous dispatch"
+                )
+                outcome = event_kind = "zero_effect_transfer_reconciled"
+            else:
+                reason = (
+                    f"Observed {quantity} of requested {step.parameters['quantity']} "
+                    f"{step.parameters['item']} in the exact native transfer receipt; "
+                    "fail this plan and replan without replaying the ambiguous dispatch"
+                )
+                outcome = event_kind = "partial_transfer_reconciled"
             self.memory.event(
-                "partial_transfer_reconciled",
+                event_kind,
                 plan=plan.id, step_index=self.memory.step_index,
                 receipt=step.parameters["receipt"], requested_quantity=step.parameters["quantity"],
-                transferred_quantity=quantity, receipt_tick=partial_transfer["receipt_tick"],
+                transferred_quantity=quantity, receipt_tick=incomplete_transfer["receipt_tick"],
                 attempt_id=self.memory.attempt["id"], tick=snapshot.tick,
             )
-            self._finish_attempt(snapshot, "partial_transfer_reconciled")
+            self._finish_attempt(snapshot, outcome)
             self.memory.status = "running"
             self._fail_plan(reason)
             return self._record(snapshot, "reconcile", reason)

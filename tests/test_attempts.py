@@ -168,6 +168,80 @@ def test_ambiguous_native_partial_receipt_reconciles_without_replay(monkeypatch,
     assert reloaded.attempt_outcomes[-1] == outcome
 
 
+def test_ambiguous_native_zero_receipt_reconciles_only_with_retained_source(monkeypatch, tmp_path):
+    """Zero transfer receipts need exact FLE evidence and retained source material."""
+    backend = ReceiptBackend("zero")
+    backend.state.world_kind = "fle"
+    backend.state.factory["player_bound"] = True
+    install_plan(monkeypatch, backend, reserve_transfer=True)
+    original_execute = backend.execute
+
+    def execute_then_report_zero(action, parameters):
+        original_execute(action, parameters)
+        raise RuntimeError("native transfer reported no destination capacity")
+
+    monkeypatch.setattr(backend, "execute", execute_then_report_zero)
+    first = controller(tmp_path, backend, max_pending_polls=1)
+    first.step()
+    backend.state.factory["receipts"]["transfer:0"]["tick"] = backend.state.tick
+    saved = load(tmp_path / "checkpoint.json")
+    assert saved.pending["dispatch"] == "ambiguous"
+    assert saved.reservations == {"same-plan-id": {"automation-science-pack": 20}}
+    assert backend.state.inventory["automation-science-pack"] == 20
+    assert backend.state.factory["receipts"]["transfer:0"]["quantity"] == 0
+
+    resumed = controller(tmp_path, backend, resume=True, max_pending_polls=1)
+    result = resumed.step()
+
+    assert result["action"] == "reconcile" and result["status"] == "running"
+    assert "zero of requested 20" in result["outcome"]
+    assert len(backend.calls) == 1
+    assert resumed.memory.pending is resumed.memory.active_plan is resumed.memory.attempt is None
+    assert resumed.memory.failures == {"same-plan-id": 1}
+    outcome = resumed.memory.attempt_outcomes[-1]
+    assert outcome["id"] == saved.attempt["id"]
+    assert outcome["outcome"] == "zero_effect_transfer_reconciled"
+    event = next(event for event in resumed.memory.history
+                 if event["kind"] == "zero_effect_transfer_reconciled")
+    assert event["requested_quantity"] == 20 and event["transferred_quantity"] == 0
+    reloaded = load(tmp_path / "checkpoint.json")
+    assert reloaded.pending is reloaded.active_plan is reloaded.attempt is None
+    assert reloaded.attempt_outcomes[-1] == outcome
+
+
+@pytest.mark.parametrize("change", ["source_not_retained", "actor_not_bound"])
+def test_ambiguous_native_zero_receipt_stays_pending_without_all_exact_evidence(
+    monkeypatch, tmp_path, change
+):
+    backend = ReceiptBackend("zero")
+    backend.state.world_kind = "fle"
+    backend.state.factory["player_bound"] = True
+    install_plan(monkeypatch, backend, reserve_transfer=True)
+    original_execute = backend.execute
+
+    def execute_then_report_zero(action, parameters):
+        original_execute(action, parameters)
+        raise RuntimeError("native transfer reported no destination capacity")
+
+    monkeypatch.setattr(backend, "execute", execute_then_report_zero)
+    first = controller(tmp_path, backend, max_pending_polls=1)
+    first.step()
+    backend.state.factory["receipts"]["transfer:0"]["tick"] = backend.state.tick
+    saved = load(tmp_path / "checkpoint.json")
+    if change == "source_not_retained":
+        backend.state.inventory["automation-science-pack"] = 19
+    else:
+        backend.state.factory["player_bound"] = False
+
+    resumed = controller(tmp_path, backend, resume=True, max_pending_polls=1)
+    result = resumed.step()
+
+    assert result["status"] == "uncertain"
+    assert resumed.memory.attempt["id"] == saved.attempt["id"]
+    assert resumed.memory.reservations == saved.reservations
+    assert len(backend.calls) == 1
+
+
 @pytest.mark.parametrize("change", [
     "mock_world", "returned_dispatch", "wrong_entity", "wrong_receipt",
 ])
