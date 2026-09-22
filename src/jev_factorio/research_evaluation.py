@@ -61,6 +61,9 @@ def evaluate_run(path: Path, *, manifest_path: Path | None = None,
 
 
 def reduce_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -> RunEvaluation:
+    if run.integrity.get("source_format") == "logging-core-v1":
+        from .research_core_evaluation import reduce_core_run
+        return reduce_core_run(run, allow_mixed_treatments=allow_mixed_treatments)
     manifest, events = run.manifest, run.events
     run_id = manifest["run_id"]
     problems: set[str] = set()

@@ -104,6 +104,10 @@ def read_run(path: Path, *, manifest_path: Path | None = None) -> VerifiedRun:
     manifest_path = Path(manifest_path) if manifest_path else events_path.parent / "manifest.json"
     raw_manifest = manifest_path.read_bytes()
     manifest = load_json(raw_manifest)
+    if manifest.get("schema") == "jev-factorio.manifest.v1":
+        return _read_core_run(events_path, manifest_path, raw_manifest, manifest)
+    if "schema" in manifest:
+        raise EvidenceError("Unsupported run manifest format")
     if type(manifest.get("schema_version")) is not int or manifest["schema_version"] != 1:
         raise EvidenceError("Unsupported run manifest schema")
     for key in ("run_id", "session_id", "controller", "policy", "target", "backend"):
@@ -204,6 +208,7 @@ def read_run(path: Path, *, manifest_path: Path | None = None) -> VerifiedRun:
     return VerifiedRun(
         manifest, tuple(events), {
             "schema": "jev-factorio.integrity.v1", "valid": True,
+            "source_format": "evaluator-proposed-v1",
             "run_id": manifest["run_id"], "event_count": len(events),
             "head_hash": previous, "manifest_sha256": manifest_hash,
             "events_file_sha256": "sha256:" + source_hash.hexdigest(),
@@ -213,3 +218,49 @@ def read_run(path: Path, *, manifest_path: Path | None = None) -> VerifiedRun:
             "limitation": "An unanchored chain cannot detect a rehashed rewrite or all valid-prefix truncations.",
         }, (manifest_path.resolve(), events_path.resolve()),
     )
+
+
+def _read_core_run(events_path: Path, manifest_path: Path, raw_manifest: bytes,
+                   manifest: dict) -> VerifiedRun:
+    from .research_log import verify_run
+
+    if (events_path.name != "events.jsonl" or manifest_path.name != "manifest.json"
+            or events_path.parent.resolve() != manifest_path.parent.resolve()):
+        raise EvidenceError("Core evidence requires its original run-directory layout")
+    seal_path = events_path.parent / "integrity.json"
+    raw_seal = seal_path.read_bytes() if seal_path.exists() else None
+    events = []
+    source_hash = hashlib.sha256()
+    with events_path.open("rb") as stream:
+        for raw in iter(lambda: stream.readline(MAX_LINE_BYTES + 1), b""):
+            if len(raw) > MAX_LINE_BYTES or not raw.endswith(b"\n"):
+                raise EvidenceError("Oversized or unterminated core event")
+            source_hash.update(raw)
+            events.append(load_json(raw))
+    try:
+        verified = verify_run(events_path.parent, allow_incomplete=True)
+    except (ValueError, OSError) as exc:
+        raise EvidenceError(f"Core evidence verification failed: {exc}") from exc
+    second_hash = hashlib.sha256()
+    with events_path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            second_hash.update(block)
+    if (manifest_path.read_bytes() != raw_manifest
+            or second_hash.digest() != source_hash.digest()
+            or (seal_path.read_bytes() if seal_path.exists() else None) != raw_seal):
+        raise EvidenceError("Core evidence changed during evaluation; use a captured copy")
+    if not events:
+        raise EvidenceError("Empty core event stream")
+    return VerifiedRun(manifest, tuple(events), {
+        "schema": "jev-factorio.integrity.v1", "valid": True,
+        "source_format": "logging-core-v1", "source_manifest_schema": manifest["schema"],
+        "source_event_schema": events[0]["schema"], "authenticated": False,
+        "run_id": verified["run_id"], "event_count": verified["event_count"],
+        "complete": verified["complete"], "head_hash": verified["final_event_hash"],
+        "manifest_sha256": verified["manifest_hash"],
+        "events_file_sha256": "sha256:" + source_hash.hexdigest(),
+        "manifest_file_sha256": "sha256:" + hashlib.sha256(raw_manifest).hexdigest(),
+        "seal_file_sha256": ("sha256:" + hashlib.sha256(raw_seal).hexdigest()
+                             if raw_seal is not None else None),
+        "limitation": "An unanchored chain and seal do not authenticate the producer.",
+    }, (manifest_path.resolve(), events_path.resolve()))

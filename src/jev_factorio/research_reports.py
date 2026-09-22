@@ -107,7 +107,8 @@ def experiment_summary(evaluations: list[RunEvaluation], *, pair: tuple[str, str
     summaries = sorted((item.summary for item in evaluations), key=lambda s: s["run_id"])
     if len({s["run_id"] for s in summaries}) != len(summaries):
         raise EvidenceError("Duplicate run_id/input; a run is one experimental unit")
-    if len({s["session_id"] for s in summaries}) != len(summaries):
+    known_sessions = [s["session_id"] for s in summaries if s["session_id"] is not None]
+    if len(set(known_sessions)) != len(known_sessions):
         raise EvidenceError("Repeated world session; independent resets cannot be inferred from new run IDs")
     cells: set[bytes] = set()
     trials: set[tuple] = set()
