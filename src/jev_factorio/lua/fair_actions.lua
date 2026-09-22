@@ -69,13 +69,44 @@ fair.begin_move = function(position)
     return {request = fair.job.request}
 end
 
+local function mining_entity(player, position, item)
+    local filter = {position = position, radius = 0.75}
+    if item == "wood" then filter.type = "tree" else filter.name = item end
+    local best, best_distance
+    for _, entity in pairs(player.surface.find_entities_filtered(filter)) do
+        if entity.valid and entity.minable then
+            local distance = (entity.position.x - position.x)^2
+                + (entity.position.y - position.y)^2
+            if not best or distance < best_distance then
+                best, best_distance = entity, distance
+            end
+        end
+    end
+    assert(best, "No mineable resource at target")
+    return best
+end
+
+fair.mine_approach = function(position, item)
+    local player = fair.actor()
+    local entity = mining_entity(player, position, item)
+    if player.can_reach_entity(entity) then return {reachable = true} end
+    local horizontal = player.position.x - entity.position.x
+    local vertical = player.position.y - entity.position.y
+    local distance = math.sqrt(horizontal * horizontal + vertical * vertical)
+    assert(distance > 0, "Unreachable mining target overlaps player")
+    local target = {
+        x = entity.position.x + horizontal / distance * 1.5,
+        y = entity.position.y + vertical / distance * 1.5
+    }
+    local approach = player.surface.find_non_colliding_position("character", target, 2, 0.25)
+    assert(approach, "No collision-free mining approach")
+    return {reachable = false, position = approach}
+end
+
 fair.begin_mine = function(position, item, quantity)
     local player = fair.actor()
     fair.stop()
-    local filter = {position = position, radius = 0.75}
-    if item == "wood" then filter.type = "tree" else filter.name = item end
-    local entity = player.surface.find_entities_filtered(filter)[1]
-    assert(entity and entity.valid and entity.minable, "No mineable resource at target")
+    local entity = mining_entity(player, position, item)
     assert(player.can_reach_entity(entity), "Mining target is outside normal reach")
     player.update_selected_entity(entity.position)
     assert(player.selected == entity, "Mining target is obscured by another entity")
@@ -89,6 +120,40 @@ fair.begin_mine = function(position, item, quantity)
     return {baseline = fair.job.baseline}
 end
 
+fair.next_mine_target = function(item, radius)
+    local player = fair.actor()
+    assert(type(item) == "string", "Mining item must be a string")
+    assert(type(radius) == "number" and radius > 0 and radius <= 128,
+        "Mining search radius is invalid")
+    local filter = {position = player.position, radius = radius}
+    if item == "wood" then filter.type = "tree" else filter.name = item end
+    local best, best_distance
+    for _, entity in pairs(player.surface.find_entities_filtered(filter)) do
+        if entity.valid and entity.minable then
+            local horizontal = entity.position.x - player.position.x
+            local vertical = entity.position.y - player.position.y
+            local distance = horizontal * horizontal + vertical * vertical
+            if not best or distance < best_distance then
+                -- Reject targets obscured by another entity before committing
+                -- an observation.  This only updates the normal cursor; it
+                -- does not walk, mine, transfer, or alter game speed.  The
+                -- later begin_mine call independently enforces normal reach.
+                player.update_selected_entity(entity.position)
+                if player.selected == entity then
+                    best, best_distance = entity, distance
+                end
+            end
+        end
+    end
+    if not best then return {} end
+    return {
+        position = {x = best.position.x, y = best.position.y},
+        unit_number = best.unit_number,
+        name = best.name,
+        surface_index = best.surface.index,
+    }
+end
+
 fair.observe = function()
     local player = fair.actor()
     local job = fair.job or {}
@@ -99,6 +164,42 @@ fair.observe = function()
         position = player.position, tick = game.tick, status = job.status or "idle",
         error = job.error, gained = job.item and player.get_item_count(job.item) - job.baseline or 0
     }
+end
+
+fair.find_build_site = function(name, center, radius)
+    local player = fair.actor()
+    assert(type(name) == "string" and prototypes.entity[name], "Unknown building prototype")
+    assert(type(center) == "table" and type(center.x) == "number"
+        and type(center.y) == "number", "Invalid build-site center")
+    assert(type(radius) == "number" and radius >= 0 and radius <= 32
+        and radius % 0.5 == 0, "Invalid build-site radius")
+    local directions = {
+        defines.direction.north, defines.direction.east,
+        defines.direction.south, defines.direction.west
+    }
+    local best, best_distance
+    local half_steps = radius * 2
+    for horizontal = -half_steps, half_steps do
+        for vertical = -half_steps, half_steps do
+            local position = {
+                x = center.x + horizontal / 2,
+                y = center.y + vertical / 2
+            }
+            local distance = horizontal * horizontal + vertical * vertical
+            for _, direction in ipairs(directions) do
+                if player.surface.can_place_entity{
+                    name = name, position = position, direction = direction,
+                    force = player.force,
+                    build_check_type = defines.build_check_type.manual
+                } and (not best or distance < best_distance) then
+                    best = {position = position, direction = direction}
+                    best_distance = distance
+                end
+            end
+        end
+    end
+    assert(best, "No ordinary build site")
+    return best
 end
 
 fair.place = function(name, position, direction)
@@ -158,10 +259,6 @@ local previous_tick = script.get_event_handler(defines.events.on_tick)
 if previous_tick ~= fair.tick_handler then fair.previous_tick = previous_tick end
 fair.tick_handler = function(event)
     if fair.quarantined then fair.stop("Adapter attachment is not validated"); return end
-    if fair.previous_tick then
-        local succeeded = pcall(fair.previous_tick, event)
-        if not succeeded then fair.stop("Legacy tick handler failed"); return end
-    end
     local job = fair.job
     if not job or job.status == "failed" or job.status == "completed" then return end
     local ok, player = pcall(fair.actor)

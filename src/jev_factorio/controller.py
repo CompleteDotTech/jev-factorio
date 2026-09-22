@@ -33,12 +33,18 @@ def _json_safe(value):
 
 
 class HierarchicalLoop(AgentLoop):
+    memory_type = CampaignMemory
+
     def __init__(self, backend, jev=None, *, target: str = "rocket_launch",
                  policy: str = "jev", checkpoint: str | None = None,
                  resume_controller: bool = False, confidence_floor: float = 0.45,
                  tick_seconds: float = 2.0, log_file: str | None = None,
                  max_request_bytes: int = 32000, max_pending_polls: int = 32,
-                 max_stalled_decisions: int = 4, research_log: EventSink | None = None):
+                 max_stalled_decisions: int = 4, factory_scheduling: str = "serial",
+                 research_log: EventSink | None = None):
+        if factory_scheduling not in {"serial", "ready-work"}:
+            raise ValueError("Unknown factory scheduling policy")
+        self.factory_scheduling = factory_scheduling
         if policy not in {"jev", "deterministic", "hybrid"}:
             raise ValueError("Unknown campaign policy")
         if policy != "deterministic" and jev is None:
@@ -89,8 +95,8 @@ class HierarchicalLoop(AgentLoop):
         # Validate serialized facts rather than allowing NaN into conditions.
         json.dumps(snapshot.for_jev(), allow_nan=False)
         if self.memory is None:
-            self.memory = (CampaignMemory.load(self.checkpoint, snapshot.session_id, self.target)
-                           if self.resume_controller else CampaignMemory(snapshot.session_id, self.target))
+            self.memory = (self.memory_type.load(self.checkpoint, snapshot.session_id, self.target)
+                           if self.resume_controller else self.memory_type(snapshot.session_id, self.target))
         if self.memory.session_id != snapshot.session_id or snapshot.tick < self.memory.last_tick:
             raise ValueError("Session changed or observation tick regressed; refusing to act")
         self.memory.last_tick = snapshot.tick
@@ -167,12 +173,97 @@ class HierarchicalLoop(AgentLoop):
             "usage": getattr(self.jev, "last_usage", None) if decision else None,
             "pending": self.memory.pending, "history": self.memory.history[-8:],
         }
+        if getattr(self, "factory_scheduling", "serial") != "serial":
+            record["factory_scheduling"] = self.factory_scheduling
+        fair = getattr(getattr(self, "backend", None), "_fair", None)
+        metrics = getattr(fair, "metrics", None)
+        if isinstance(metrics, dict):
+            record["fair_action_metrics"] = dict(metrics)
+        record.update(self._record_extras())
         if self.log_file:
             self.log_file.parent.mkdir(parents=True, exist_ok=True)
             with self.log_file.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(_json_safe(record), allow_nan=False) + "\n")
         print(f"[t={before.tick}] {self.memory.status}: {action} -> {outcome}", flush=True)
         return record
+
+    def _model_facts(self, snapshot: GameSnapshot) -> dict:
+        return snapshot.for_jev()
+
+    def _record_extras(self) -> dict:
+        return {}
+
+    def _step_allowed(self, step, snapshot: GameSnapshot) -> bool:
+        return step.allowed(snapshot)
+
+    def _execution_barrier(self, snapshot: GameSnapshot) -> bool:
+        return False
+
+    def _absent_ambiguous_placement(self, plan: Plan, step, snapshot: GameSnapshot) -> bool:
+        """Prove that retrying an ambiguous placement cannot duplicate a building."""
+        pending = self.memory.pending or {}
+        if pending.get("dispatch") != "ambiguous" or step.action != "factory_place":
+            return False
+        parameters = step.parameters or {}
+        role, name = parameters.get("role"), parameters.get("name")
+        entities = snapshot.factory.get("entities", {})
+        counts = snapshot.factory.get("force_entity_counts")
+        costs = step.costs or {}
+        reserved = self.memory.reservations.get(plan.id)
+        return bool(
+            role and name and role not in entities
+            and isinstance(counts, dict) and counts.get(name, 0) == 0
+            and costs and reserved == costs
+            and all(snapshot.inventory.get(item, 0) >= quantity
+                    for item, quantity in costs.items())
+        )
+
+    def _absent_ambiguous_connection(self, plan: Plan, step, snapshot: GameSnapshot) -> bool:
+        """Prove an ambiguous connection placed no connector before permitting a replan."""
+        pending = self.memory.pending or {}
+        if pending.get("dispatch") != "ambiguous" or step.action != "factory_connect":
+            return False
+        parameters = step.parameters or {}
+        source, target, kind = (
+            parameters.get("source"), parameters.get("target"), parameters.get("kind")
+        )
+        entities = snapshot.factory.get("entities", {})
+        counts = snapshot.factory.get("force_entity_counts")
+        costs = step.costs or {}
+        reserved = self.memory.reservations.get(plan.id)
+        count = counts.get(kind, 0) if isinstance(counts, dict) else None
+        retained = all(snapshot.inventory.get(item, 0) >= quantity
+                       for item, quantity in costs.items())
+        return bool(
+            source in entities and target in entities and kind in {"pipe", "small-electric-pole"}
+            and isinstance(counts, dict)
+            and type(count) is int and count >= 0
+            and set(costs) == {kind} and reserved == costs
+            and retained and count == 0
+        )
+
+    def _partial_unacknowledged_gather(self, step, snapshot: GameSnapshot) -> bool:
+        """Identify a partial native gather without treating it as step success.
+
+        An inventory increase below the committed threshold is not a license to
+        replay an unacknowledged harvest.  The resumed controller instead fails
+        this plan and replans from the observed inventory.  This is deliberately
+        narrower than normal inventory verification: it applies only after an
+        prepared or ambiguous factory gather has already been observed at least
+        once.
+        """
+        pending = self.memory.pending or {}
+        parameters = step.parameters or {}
+        item = parameters.get("resource")
+        observed = snapshot.inventory.get(item, 0) if isinstance(item, str) else 0
+        return bool(
+            pending.get("dispatch") in {"prepared", "ambiguous"}
+            and type(pending.get("polls")) is int and pending["polls"] > 0
+            and step.action == "factory_gather" and step.effect == "inventory"
+            and item == step.item and item
+            and isinstance(observed, (int, float)) and not isinstance(observed, bool)
+            and math.isfinite(observed) and 0 < observed < step.threshold
+        )
 
     def _verify_pending(self, snapshot: GameSnapshot) -> dict:
         plan = Plan.from_dict(self.memory.active_plan)
@@ -191,11 +282,49 @@ class HierarchicalLoop(AgentLoop):
                 self._clear_plan()
             self._refresh_goals(snapshot)
             return self._record(snapshot, "verify", "Observed expected postcondition", verified=True)
+        if self._absent_ambiguous_placement(plan, step, snapshot):
+            name = step.parameters["name"]
+            reason = (f"Observed no durable {name} placement and retained all reserved "
+                      "materials; replan without replaying the ambiguous dispatch")
+            self.memory.status = "running"
+            self._fail_plan(reason)
+            return self._record(snapshot, "reconcile", reason)
+        if self._absent_ambiguous_connection(plan, step, snapshot):
+            kind = step.parameters["kind"]
+            reason = (f"Observed no durable {kind} construction and retained all reserved "
+                      "materials; replan without replaying the ambiguous dispatch")
+            self.memory.status = "running"
+            self._fail_plan(reason)
+            return self._record(snapshot, "reconcile", reason)
+        if self._partial_unacknowledged_gather(step, snapshot):
+            quantity = snapshot.inventory[step.item]
+            reason = (
+                f"Observed {quantity} {step.item} below committed inventory threshold "
+                f"{step.threshold} after an unacknowledged native gather; replan without "
+                "replaying the ambiguous dispatch"
+            )
+            self.memory.status = "running"
+            self._fail_plan(reason)
+            return self._record(snapshot, "reconcile", reason)
         boiler = snapshot.factory.get("entities", {}).get("utility:boiler", {})
         if step.action == "factory_wait" and boiler and boiler.get("fuel", {}).get("coal", 0) < 5:
             self.memory.event("maintenance_required", reason="boiler fuel", tick=snapshot.tick)
             self._clear_plan()
             return self._record(snapshot, "observe", "Replan a nonmutating wait to replenish boiler fuel")
+        if (self.factory_scheduling == "ready-work" and self.catalog is not None
+                and self.memory.status == "running" and pending.get("dispatch") == "returned"
+                and step.action == "factory_wait" and step.effect == "machine_output"):
+            candidates, _ = self._compile_candidates(snapshot)
+            ready = [candidate for candidate in candidates
+                     if self.memory.failures.get(candidate.id, 0) < 2
+                     and candidate.steps[0].action != "factory_wait"
+                     and candidate.steps[0].allowed(snapshot)
+                     and not candidate.steps[0].satisfied(snapshot)]
+            if ready:
+                self.memory.event("passive_wait_yielded", plan=plan.id,
+                                  candidates=[candidate.id for candidate in ready], tick=snapshot.tick)
+                self._clear_plan()
+                return self._record(snapshot, "observe", "Yield passive machine wait to ready work")
         pending["polls"] += 1
         expired = (snapshot.tick - pending["started_tick"] >= step.timeout_ticks
                    or pending["polls"] >= self.max_pending_polls)
@@ -220,6 +349,24 @@ class HierarchicalLoop(AgentLoop):
                                  role="mock_clock_advance")
         return self._record(snapshot, "observe", "Waiting for the in-flight postcondition")
 
+    def _compile_candidates(self, snapshot: GameSnapshot) -> tuple[list[Plan], str]:
+        if self.catalog is not None and self.memory.active_goal in {
+            "rocket_launch", "iron_smelting", "steam_power", "automation_science", "bootstrap_mining"
+        }:
+            if self.factory_scheduling == "ready-work":
+                from .planning.ready_work import compile_ready_factory
+
+                return compile_ready_factory(self.memory.active_goal, snapshot, self.catalog)
+            from .planning.factory import compile_factory
+
+            return compile_factory(self.memory.active_goal, snapshot, self.catalog)
+        return compile_plans(self.memory.active_goal, snapshot)
+
+    def _fallback_plan(self, plans: list[Plan]) -> Plan:
+        if self.factory_scheduling == "ready-work" and self.catalog is not None:
+            return plans[0]  # Preserve the compiler's critical-prerequisite priority.
+        return min(plans, key=lambda plan: (len(plan.steps), plan.id))
+
     @traced_step
     def step(self) -> dict:
         self._decision = None
@@ -236,19 +383,10 @@ class HierarchicalLoop(AgentLoop):
         if self.terminal:
             return self._record(snapshot, "observe", self.memory.reason, verified=True)
         if self.memory.active_plan is None:
-            if self.catalog is not None and self.memory.active_goal in {
-                "rocket_launch", "iron_smelting", "steam_power", "automation_science", "bootstrap_mining"
-            }:
-                from .planning.factory import compile_factory
-
-                plans, blocker = self._trace.call(
-                    "candidate_set_created",
-                    lambda: compile_factory(self.memory.active_goal, snapshot, self.catalog),
-                    result=lambda value: {"plans": [p.to_dict() for p in value[0]], "blocker": value[1]})
-            else:
-                plans, blocker = self._trace.call(
-                    "candidate_set_created", lambda: compile_plans(self.memory.active_goal, snapshot),
-                    result=lambda value: {"plans": [p.to_dict() for p in value[0]], "blocker": value[1]})
+            plans, blocker = self._trace.call(
+                "candidate_set_created", lambda: self._compile_candidates(snapshot),
+                result=lambda value: {"plans": [plan.to_dict() for plan in value[0]],
+                                      "blocker": value[1]})
             plans = [p for p in plans if self.memory.failures.get(p.id, 0) < 2]
             if self._trace.enabled:
                 self._trace.emit("candidate_set_filtered", {"eligible_plan_ids": [p.id for p in plans],
@@ -257,16 +395,23 @@ class HierarchicalLoop(AgentLoop):
                 self.memory.status, self.memory.reason = "blocked", blocker or "Plan failure budget exhausted"
                 return self._record(snapshot, "observe", self.memory.reason)
             if self.policy == "deterministic":
-                chosen = min(plans, key=lambda p: (len(p.steps), p.id))
+                chosen = self._fallback_plan(plans)
                 self._decision = Decision(chosen.id, "deterministic")
                 self._trace_decision()
             else:
-                facts = snapshot.for_jev()
+                facts = self._model_facts(snapshot)
                 if facts["factory"]:
                     receipts = facts["factory"].pop("receipts", {})
+                    facts["factory"].pop("connectors", None)
                     facts["factory"]["native_transfer_receipt_count"] = len(receipts)
                 state = {"facts": facts, "active_goal": asdict(GOALS[self.memory.active_goal]),
                          "history": self.memory.history[-8:]}
+                if self.factory_scheduling == "ready-work":
+                    state["production_scheduling"] = {
+                        "objective": "Advance the next production batch identified in plan descriptions",
+                        "guidance": "Prefer useful work while machines run; avoid tiny pickups and idle waits",
+                        "ultimate_goal": self.memory.active_goal,
+                    }
                 try:
                     self._decision = select_plan(self._decision_client, state, plans, self.confidence_floor,
                                                  self.max_request_bytes)
@@ -274,7 +419,7 @@ class HierarchicalLoop(AgentLoop):
                     self._decision = Decision(None, "observe", str(error))
                 chosen = next((p for p in plans if p.id == self._decision.plan_id), None)
                 if chosen is None and self.policy == "hybrid":
-                    chosen = min(plans, key=lambda plan: (len(plan.steps), plan.id))
+                    chosen = self._fallback_plan(plans)
                     self._decision.plan_id = chosen.id
                     self._decision.source = "deterministic-fallback"
                 self._trace_decision()
@@ -296,6 +441,8 @@ class HierarchicalLoop(AgentLoop):
         # The world can change while a remote model evaluates the old snapshot.
         self._trace.observation_phase = "before_dispatch"
         fresh = self._observe()
+        if self._execution_barrier(fresh):
+            return self._record(snapshot, "observe", self.memory.reason, fresh)
         plan = Plan.from_dict(self.memory.active_plan)
         index = self._trace.call(
             "plan_progress", lambda: plan.next_step(fresh, self.memory.step_index),
@@ -310,7 +457,7 @@ class HierarchicalLoop(AgentLoop):
             return self._record(snapshot, "verify", "Plan effects already observed", fresh, True)
         self.memory.step_index = index
         step = plan.steps[index]
-        if not self._trace.call("precondition_checked", lambda: step.allowed(fresh),
+        if not self._trace.call("precondition_checked", lambda: self._step_allowed(step, fresh),
                                 details={"plan_id": plan.id, "step_index": index},
                                 result=lambda value: {"allowed": value}):
             self._fail_plan("Plan precondition changed; replan from current observations")
@@ -343,6 +490,9 @@ class HierarchicalLoop(AgentLoop):
         self._save()
         self._trace.observation_phase = "after_dispatch"
         after = self._observe()  # Failure leaves pending durable.
+        if self._execution_barrier(after):
+            return self._record(snapshot, step.action,
+                                str(outcome) + "; pending retained for reconciliation", after)
         verified = self._trace.verify(step, after, plan_id=plan.id, index=index,
                                       pending=self.memory.pending, phase="post_dispatch")
         if verified:

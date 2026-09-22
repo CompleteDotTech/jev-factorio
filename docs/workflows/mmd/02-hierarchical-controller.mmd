@@ -1,0 +1,90 @@
+flowchart TD
+
+subgraph CTRL["2. Hierarchical controller"]
+    OBS["Observe native game state<br/>Inventory, resources, machines, research,<br/>production, receipts, connections, launch counter"]
+    VALID{"Valid session, world kind,<br/>finite telemetry and monotonic tick?"}
+    PENDING{"Unresolved pending action?"}
+    TERMINAL{"Controller already terminal?"}
+    GOALS["Verify goal predicates<br/>Refresh completed goals<br/>Select first incomplete prerequisite"]
+    TARGET_DONE{"Target goal verified?"}
+    ACTIVE{"Committed plan exists?"}
+    COMPILE["Compile bounded executable plans<br/>Factory planner or bootstrap skill compiler"]
+    FILTER["Exclude plans with failure count of 2 or more"]
+    CANDIDATES{"Any candidate plans remain?"}
+    BLOCKED["Mark blocked<br/>Record exact blocker"]
+    POLICY{"Decision policy?"}
+    DETERMINISTIC["Choose minimum by<br/>step count, then plan ID"]
+    COMMIT["Commit selected plan and step index<br/>Persist checkpoint"]
+    FRESH["Observe again after decision<br/>Do not execute against stale model input"]
+    SKIP["Skip steps whose postconditions<br/>are already observed"]
+    PLAN_DONE{"All plan effects already satisfied?"}
+    PRECONDITION{"Next step still allowed?"}
+    RESERVE{"Can reserve required<br/>carried materials?"}
+    WRITEAHEAD["Persist pending action BEFORE dispatch<br/>State: prepared<br/>Record start tick and zero polls"]
+    DISPATCH["Execute the committed action"]
+    RETURNED{"Dispatch returned normally?"}
+    AMBIGUOUS["Persist dispatch: ambiguous<br/>Record error type<br/>Do not blindly replay"]
+    RETURN_STATE["Persist dispatch: returned"]
+    AFTER["Observe actual post-action state"]
+    EFFECT{"Expected postcondition satisfied?"}
+    VERIFIED["Release reservation<br/>Clear pending<br/>Advance step<br/>Reset stalled-decision count"]
+    REMAINING{"More steps in committed plan?"}
+    CLEAR["Clear completed plan<br/>Refresh goal predicates"]
+    FAILPLAN["Increment this plan's failure count<br/>Release reservation and clear plan<br/>Preserve failure history"]
+    RECORD["Save checkpoint and append audit log<br/>Facts, decision, model usage, outcome,<br/>pending state and verification"]
+    CADENCE["Wait configured interval<br/>Current campaign: 2 seconds"]
+    GAME_ERROR["Unhandled controller or backend failure"]
+
+    LAUNCH --> OBS
+    OBS --> VALID
+    VALID -->|No| GAME_ERROR
+    VALID -->|Yes| PENDING
+    PENDING -->|Yes| VERIFY_PENDING
+    PENDING -->|No| TERMINAL
+    TERMINAL -->|Yes| RECORD
+    TERMINAL -->|No| GOALS
+    GOALS --> TARGET_DONE
+    TARGET_DONE -->|Yes| SUCCESS
+    TARGET_DONE -->|No| ACTIVE
+    ACTIVE -->|Yes| FRESH
+    ACTIVE -->|No| COMPILE
+    COMPILE --> FILTER --> CANDIDATES
+    CANDIDATES -->|No| BLOCKED
+    BLOCKED --> RECORD
+    CANDIDATES -->|Yes| POLICY
+    POLICY -->|Deterministic| DETERMINISTIC
+    POLICY -->|Jev or hybrid| JEV_BATCH
+    DETERMINISTIC --> COMMIT
+    COMMIT --> FRESH --> SKIP --> PLAN_DONE
+    PLAN_DONE -->|Yes| CLEAR
+    PLAN_DONE -->|No| PRECONDITION
+    PRECONDITION -->|No| FAILPLAN
+    PRECONDITION -->|Yes| RESERVE
+    RESERVE -->|No| FAILPLAN
+    RESERVE -->|Yes| WRITEAHEAD --> DISPATCH
+    DISPATCH --> ACTION_TYPE
+    NATIVE_RETURN --> RETURNED
+    RETURNED -->|No| AMBIGUOUS --> RECORD
+    RETURNED -->|Yes| RETURN_STATE --> AFTER --> EFFECT
+    EFFECT -->|No| RECORD
+    EFFECT -->|Yes| VERIFIED --> REMAINING
+    REMAINING -->|Yes| RECORD
+    REMAINING -->|No| CLEAR --> RECORD
+    FAILPLAN --> RECORD
+    RECORD --> CADENCE
+    CADENCE -->|Running and time remains| OBS
+    CADENCE -->|Terminal or deadline| WATCH
+    GAME_ERROR --> INCIDENT
+end
+
+
+    ACTION_TYPE{"Committed action type?"}
+    INCIDENT["Stop and reap gameplay process<br/>Capture immutable incident checkpoint<br/>and source baseline"]
+    JEV_BATCH["Build one independent question batch<br/>Facts, active goal and last eight history events<br/>Up to 16 candidate plans"]
+    LAUNCH["Launch hierarchical controller<br/>Same world and session<br/>Hybrid policy · Jev 1.13.0"]
+    NATIVE_RETURN["Return success or raise error<br/>Controller still verifies postcondition"]
+    SUCCESS["Verified campaign completion<br/>Stop gameplay controller"]
+    VERIFY_PENDING["Observe pending action before<br/>any new plan or mutation"]
+    WATCH["Monitor process and checkpoint<br/>Poll every 5 seconds"]
+classDef continuation fill:#fff7ed,stroke:#c2410c,stroke-dasharray:5 4;
+class ACTION_TYPE,INCIDENT,JEV_BATCH,LAUNCH,NATIVE_RETURN,SUCCESS,VERIFY_PENDING,WATCH continuation;

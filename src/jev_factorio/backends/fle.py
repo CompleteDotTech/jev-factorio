@@ -56,6 +56,36 @@ class FleBackend:
             raise RuntimeError("Native factory capabilities have not been enabled")
         return self._factory.execute(action, parameters)
 
+    def native_mine_target(self, resource: str):
+        """Return a fresh, cursor-selectable native raw-resource target.
+
+        FLE's ``nearest`` cache may outlive a depleted resource entity.  Raw
+        gathering must therefore be admitted by the fair Lua selector, which
+        checks the original player, 1x speed, minability, and cursor
+        visibility.  This observation does not move or mine; FairActions
+        still walks and checks normal reach immediately before mining.
+        """
+        from fle.env import Position
+
+        selected = self._fair.call("next_mine_target", resource, 128)
+        candidate = selected.get("position") if isinstance(selected, dict) else None
+        name = selected.get("name") if isinstance(selected, dict) else None
+        surface_index = selected.get("surface_index") if isinstance(selected, dict) else None
+        if not isinstance(candidate, dict):
+            raise RuntimeError(f"No fair native {resource} target observed")
+        horizontal, vertical = candidate.get("x"), candidate.get("y")
+        if (
+            name != resource
+            or type(surface_index) is not int
+            or surface_index <= 0
+            or type(horizontal) not in {int, float}
+            or type(vertical) not in {int, float}
+            or not math.isfinite(horizontal)
+            or not math.isfinite(vertical)
+        ):
+            raise RuntimeError(f"Invalid fair native {resource} target")
+        return Position(x=float(horizontal), y=float(vertical))
+
     @staticmethod
     def _adopt_session(client) -> str:
         session_id = uuid4().hex
@@ -146,7 +176,7 @@ class FleBackend:
         return self._instance.namespace
 
     def observe(self) -> GameSnapshot:
-        from fle.env import Prototype, Resource
+        from fle.env import Prototype
 
         self._fair.call("observe")
         tools = self._tools
@@ -162,9 +192,9 @@ class FleBackend:
         nearby = {}
         alerts = [self._error] if self._error else []
         self._resources = {}
-        for name, resource in (("coal", Resource.Coal), ("iron-ore", Resource.IronOre)):
+        for name in ("coal", "iron-ore"):
             try:
-                target = tools.nearest(resource)
+                target = self.native_mine_target(name)
                 self._resources[name] = target
                 nearby[name] = math.hypot(target.x - position[0], target.y - position[1])
             except Exception as error:

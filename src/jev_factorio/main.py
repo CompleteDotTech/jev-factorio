@@ -43,7 +43,17 @@ def cli() -> None:
                    default=float(os.environ.get("JEV_CONFIDENCE_FLOOR", "0.45")))
     p.add_argument("--log-file", default=os.environ.get("JEV_LOG_FILE"))
     p.add_argument("--run-dir", help="Fresh directory for opt-in durable causal events; does not change --log-file")
+    p.add_argument("--dashboard-events", default=os.environ.get("JEV_DASHBOARD_EVENTS"),
+                   help="Optional best-effort live dashboard JSONL; hierarchical controller only")
     p.add_argument("--controller", choices=("flat", "hierarchical"), default="flat")
+    p.add_argument("--factory-scheduling", choices=("serial", "ready-work"), default="serial",
+                   help="Opt-in bounded production choices; does not enable concurrent mutations or belts")
+    p.add_argument("--furnace-output-buffers", action="store_true",
+                   help="Opt-in paid burner-inserter output buffers; requires ready-work FLE")
+    p.add_argument("--furnace-input-belts", action="store_true",
+                   help="Opt-in owned drill/belt input routes; requires furnace output buffers")
+    p.add_argument("--background-work", action="store_true",
+                   help="Opt-in receipt-tracked crafting and research prefetch; requires ready-work FLE")
     p.add_argument("--target", choices=("bootstrap_mining", "iron_smelting", "steam_power",
                                        "automation_science", "rocket_launch"), default="rocket_launch")
     p.add_argument("--policy", choices=("jev", "deterministic", "hybrid"), default="jev")
@@ -71,28 +81,51 @@ def cli() -> None:
         p.error("--steps must be nonnegative")
     if not 0 <= args.confidence_floor <= 1:
         p.error("--confidence-floor must be finite and in [0, 1]")
-    with ExitStack() as stack:
+    if args.dashboard_events and args.controller != "hierarchical":
+        p.error("--dashboard-events requires --controller hierarchical")
+    if args.factory_scheduling != "serial" and args.controller != "hierarchical":
+        p.error("--factory-scheduling requires --controller hierarchical")
+    if args.background_work and (
+        args.controller != "hierarchical" or args.factory_scheduling != "ready-work"
+        or args.backend != "fle" or args.target == "bootstrap_mining"
+    ):
+        p.error("--background-work requires hierarchical FLE ready-work and a native production target")
+    if args.furnace_input_belts and not args.furnace_output_buffers:
+        p.error("--furnace-input-belts requires --furnace-output-buffers")
+    if args.furnace_output_buffers and (
+        args.controller != "hierarchical" or args.factory_scheduling != "ready-work"
+        or args.backend != "fle" or args.target == "bootstrap_mining"
+    ):
+        p.error("--furnace-output-buffers requires hierarchical FLE ready-work and a native production target")
+    with ExitStack() as cleanup:
         def attach_research_log() -> None:
             if not args.run_dir:
                 return
             directory = Path(args.run_dir).resolve()
             reserved = {directory / "events.jsonl", directory / "manifest.json"}
             if any(Path(value).resolve() in reserved for value in
-                   (args.log_file, args.checkpoint) if value):
+                   (args.log_file, args.checkpoint, args.dashboard_events) if value):
                 p.error("Research files must be separate from legacy logs and checkpoints")
-            # Deliberate allowlist: never serialize argv, the environment, or credentials.
             metadata = {key: getattr(args, key) for key in
                         ("backend", "controller", "policy", "target", "model", "steps",
                          "duration_hours", "tick_seconds", "confidence_floor", "resume_controller")}
             metadata["checkpoint_enabled"] = args.checkpoint is not None
             try:
-                options["research_log"] = stack.enter_context(ResearchLog(
+                options["research_log"] = cleanup.enter_context(ResearchLog(
                     directory, metadata=metadata,
                     secrets=(os.environ.get("TYPESAFE_API_KEY", ""),
                              os.environ.get("CLOUDFLARE_API_TOKEN", ""))))
             except ResearchLogError:
                 p.error("Cannot create a fresh --run-dir; use a new writable directory")
 
+        writer = None
+        if args.dashboard_events:
+            from .dashboard import EventWriter
+            try:
+                writer = cleanup.enter_context(EventWriter(
+                    args.dashboard_events, forbidden=(args.checkpoint, args.log_file)))
+            except (OSError, ValueError) as error:
+                p.error(str(error))
         options = dict(confidence_floor=args.confidence_floor,
                        tick_seconds=args.tick_seconds, log_file=args.log_file)
         if args.controller == "flat":
@@ -125,10 +158,27 @@ def cli() -> None:
             except ValueError as error:
                 p.error(str(error))
             attach_research_log()
-            loop = HierarchicalLoop(make_backend(args.backend, resume=args.resume,
+            loop_type = HierarchicalLoop
+            if args.background_work:
+                from .background import BackgroundWorkLoop
+
+                loop_type = BackgroundWorkLoop
+            if args.furnace_output_buffers:
+                from .buffer_controller import buffered_loop_type
+
+                loop_type = buffered_loop_type(loop_type)
+            if args.furnace_input_belts:
+                from .input_controller import input_loop_type
+
+                loop_type = input_loop_type(loop_type)
+            loop = loop_type(make_backend(args.backend, resume=args.resume,
                                                  adopt_session=args.adopt_session), jev=client,
                                     target=args.target, policy=args.policy, checkpoint=args.checkpoint,
-                                    resume_controller=args.resume_controller, **options)
+                                    resume_controller=args.resume_controller,
+                                    factory_scheduling=args.factory_scheduling, **options)
+        if writer is not None:
+            from .dashboard import attach
+            attach(loop, writer)
         if args.duration_hours is not None:
             loop.run(steps=None, duration_seconds=args.duration_hours * 3600)
         else:

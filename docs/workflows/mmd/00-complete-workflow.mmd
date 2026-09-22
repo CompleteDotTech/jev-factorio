@@ -1,0 +1,414 @@
+flowchart TD
+
+subgraph SUP["1. Campaign supervision"]
+    START["Start or resume campaign"]
+    LOCK["Acquire exclusive supervisor lock"]
+    LOAD["Load session, checkpoint, incident state<br/>and original 12-hour deadline"]
+    DEADLINE{"Deadline reached<br/>or stop requested?"}
+    STOP["Stop and reap owned processes<br/>Preserve world and checkpoint"]
+    REPAIR_REQUIRED{"Unresolved repair incident?"}
+    LAUNCH["Launch hierarchical controller<br/>Same world and session<br/>Hybrid policy · Jev 1.13.0"]
+    WATCH["Monitor process and checkpoint<br/>Poll every 5 seconds"]
+    HEALTH{"Controller state?"}
+    HEARTBEAT{"Checkpoint unchanged<br/>for 600 seconds?"}
+    SUCCESS["Verified campaign completion<br/>Stop gameplay controller"]
+
+    START --> LOCK --> LOAD --> DEADLINE
+    DEADLINE -->|Yes| STOP
+    DEADLINE -->|No| REPAIR_REQUIRED
+    REPAIR_REQUIRED -->|No| LAUNCH
+    LAUNCH --> WATCH --> HEALTH
+    HEALTH -->|Running| HEARTBEAT
+    HEARTBEAT -->|No| DEADLINE
+    HEARTBEAT -->|Yes| INCIDENT
+    HEALTH -->|Completed| SUCCESS
+    HEALTH -->|Blocked or uncertain| INCIDENT
+    HEALTH -->|Exited or invalid checkpoint| INCIDENT
+    REPAIR_REQUIRED -->|Yes| INCIDENT
+end
+
+subgraph CTRL["2. Hierarchical controller"]
+    OBS["Observe native game state<br/>Inventory, resources, machines, research,<br/>production, receipts, connections, launch counter"]
+    VALID{"Valid session, world kind,<br/>finite telemetry and monotonic tick?"}
+    PENDING{"Unresolved pending action?"}
+    TERMINAL{"Controller already terminal?"}
+    GOALS["Verify goal predicates<br/>Refresh completed goals<br/>Select first incomplete prerequisite"]
+    TARGET_DONE{"Target goal verified?"}
+    ACTIVE{"Committed plan exists?"}
+    COMPILE["Compile bounded executable plans<br/>Factory planner or bootstrap skill compiler"]
+    FILTER["Exclude plans with failure count of 2 or more"]
+    CANDIDATES{"Any candidate plans remain?"}
+    BLOCKED["Mark blocked<br/>Record exact blocker"]
+    POLICY{"Decision policy?"}
+    DETERMINISTIC["Choose minimum by<br/>step count, then plan ID"]
+    COMMIT["Commit selected plan and step index<br/>Persist checkpoint"]
+    FRESH["Observe again after decision<br/>Do not execute against stale model input"]
+    SKIP["Skip steps whose postconditions<br/>are already observed"]
+    PLAN_DONE{"All plan effects already satisfied?"}
+    PRECONDITION{"Next step still allowed?"}
+    RESERVE{"Can reserve required<br/>carried materials?"}
+    WRITEAHEAD["Persist pending action BEFORE dispatch<br/>State: prepared<br/>Record start tick and zero polls"]
+    DISPATCH["Execute the committed action"]
+    RETURNED{"Dispatch returned normally?"}
+    AMBIGUOUS["Persist dispatch: ambiguous<br/>Record error type<br/>Do not blindly replay"]
+    RETURN_STATE["Persist dispatch: returned"]
+    AFTER["Observe actual post-action state"]
+    EFFECT{"Expected postcondition satisfied?"}
+    VERIFIED["Release reservation<br/>Clear pending<br/>Advance step<br/>Reset stalled-decision count"]
+    REMAINING{"More steps in committed plan?"}
+    CLEAR["Clear completed plan<br/>Refresh goal predicates"]
+    FAILPLAN["Increment this plan's failure count<br/>Release reservation and clear plan<br/>Preserve failure history"]
+    RECORD["Save checkpoint and append audit log<br/>Facts, decision, model usage, outcome,<br/>pending state and verification"]
+    CADENCE["Wait configured interval<br/>Current campaign: 2 seconds"]
+    GAME_ERROR["Unhandled controller or backend failure"]
+
+    LAUNCH --> OBS
+    OBS --> VALID
+    VALID -->|No| GAME_ERROR
+    VALID -->|Yes| PENDING
+    PENDING -->|Yes| VERIFY_PENDING
+    PENDING -->|No| TERMINAL
+    TERMINAL -->|Yes| RECORD
+    TERMINAL -->|No| GOALS
+    GOALS --> TARGET_DONE
+    TARGET_DONE -->|Yes| SUCCESS
+    TARGET_DONE -->|No| ACTIVE
+    ACTIVE -->|Yes| FRESH
+    ACTIVE -->|No| COMPILE
+    COMPILE --> FILTER --> CANDIDATES
+    CANDIDATES -->|No| BLOCKED
+    BLOCKED --> RECORD
+    CANDIDATES -->|Yes| POLICY
+    POLICY -->|Deterministic| DETERMINISTIC
+    POLICY -->|Jev or hybrid| JEV_BATCH
+    DETERMINISTIC --> COMMIT
+    COMMIT --> FRESH --> SKIP --> PLAN_DONE
+    PLAN_DONE -->|Yes| CLEAR
+    PLAN_DONE -->|No| PRECONDITION
+    PRECONDITION -->|No| FAILPLAN
+    PRECONDITION -->|Yes| RESERVE
+    RESERVE -->|No| FAILPLAN
+    RESERVE -->|Yes| WRITEAHEAD --> DISPATCH
+    DISPATCH --> ACTION_TYPE
+    NATIVE_RETURN --> RETURNED
+    RETURNED -->|No| AMBIGUOUS --> RECORD
+    RETURNED -->|Yes| RETURN_STATE --> AFTER --> EFFECT
+    EFFECT -->|No| RECORD
+    EFFECT -->|Yes| VERIFIED --> REMAINING
+    REMAINING -->|Yes| RECORD
+    REMAINING -->|No| CLEAR --> RECORD
+    FAILPLAN --> RECORD
+    RECORD --> CADENCE
+    CADENCE -->|Running and time remains| OBS
+    CADENCE -->|Terminal or deadline| WATCH
+    GAME_ERROR --> INCIDENT
+end
+
+subgraph GOAL_TREE["3. Goal dependencies and bootstrap skills"]
+    FUEL_GOAL["stockpile_fuel<br/>Verify carried coal at least 5"]
+    BOOT_GOAL["bootstrap_mining<br/>Verify working burner drill,<br/>connected output and at least 5 collected ore"]
+    ROCKET_GOAL["rocket_launch<br/>Verify native launch event/counter"]
+    IRON_GOAL["Optional target: iron_smelting<br/>10 carried and natively produced iron plates"]
+    STEAM_GOAL["Optional target: steam_power<br/>Powered lab on steam engine's network"]
+    SCIENCE_GOAL["Optional target: automation_science<br/>10 carried and natively produced science packs"]
+    BOOT_SELECT{"Bootstrap requirement?"}
+    BOOT_COAL["Offer coal-buffer plans<br/>Walk to observed coal if needed<br/>Mine in five-coal macros"]
+    BOOT_BUILD["Require one carried drill and chest<br/>Walk to observed iron<br/>Place drill and output chest"]
+    BOOT_FUEL["Gather coal if necessary<br/>Insert five carried coal into drill"]
+    BOOT_OUTPUT["Wait for measured ore output<br/>Extract ore if output chest blocks drill"]
+    BOOT_BLOCK["Block on missing materials,<br/>missing resource or unverified construction"]
+
+    FUEL_GOAL --> BOOT_GOAL
+    BOOT_GOAL --> ROCKET_GOAL
+    BOOT_GOAL -. alternative target .-> IRON_GOAL
+    BOOT_GOAL -. alternative target .-> STEAM_GOAL
+    BOOT_GOAL -. alternative target .-> SCIENCE_GOAL
+    GOALS -. uses dependency order .-> FUEL_GOAL
+    COMPILE -->|Fuel or bootstrap goal| BOOT_SELECT
+    BOOT_SELECT -->|Coal buffer missing| BOOT_COAL
+    BOOT_SELECT -->|Drill missing and materials available| BOOT_BUILD
+    BOOT_SELECT -->|Drill unfueled| BOOT_FUEL
+    BOOT_SELECT -->|Working drill or full output| BOOT_OUTPUT
+    BOOT_SELECT -->|Cannot safely proceed| BOOT_BLOCK
+    BOOT_COAL --> FILTER
+    BOOT_BUILD --> FILTER
+    BOOT_FUEL --> FILTER
+    BOOT_OUTPUT --> FILTER
+    BOOT_BLOCK --> BLOCKED
+end
+
+subgraph FACTORY["4. Deterministic factory dependency planner"]
+    FP["Read native recipe, technology<br/>and machine catalog"]
+    FP_READY{"Connected player and<br/>factory telemetry available?"}
+    FP_BIND{"Player bound to existing character?"}
+    EMIT_BIND["Emit factory_bind"]
+    CRAFT_BUSY{"Native crafting queue busy?"}
+    EMIT_WAIT["Emit factory_wait<br/>With explicit observed effect and timeout"]
+    BOILER_LOW{"Existing boiler needs fuel?"}
+    GOAL_BRANCH{"Requested factory goal?"}
+    NEED_IRON["Need 10 iron plates"]
+    NEED_SCIENCE["Need 10 automation science packs"]
+    NEED_LAB["Ensure lab and steam power"]
+    NEED_ROCKET_TECH["Ensure rocket-silo technology"]
+    SILO_READY{"Silo rocket ready?"}
+    EMIT_LAUNCH["Emit factory_launch"]
+    PARTS_DONE{"Required rocket parts complete?"}
+    ROCKET_BUILD["Produce rocket parts<br/>Up to 10 batches per planning request"]
+    NEED["Need item and quantity"]
+    HAVE{"Enough carried inventory?"}
+    OUTPUT{"Available in a known machine output?"}
+    EMIT_EXTRACT["Emit factory_extract"]
+    RAW{"Raw resource?"}
+    RAW_EVIDENCE{"Current validated native site observed?<br/>Name, surface and finite position"}
+    EMIT_EXPLORE["Emit bounded factory_explore<br/>Generate additional terrain<br/>Block at exploration limit"]
+    EMIT_GATHER["Emit factory_gather<br/>Wood: one requested unit<br/>Other raw resources: at most 50<br/>ID binds resource, site and inventory target"]
+    RECIPE["Resolve native recipe<br/>Detect dependency cycles and expansion limits"]
+    UNLOCKED{"Recipe unlocked?"}
+    HAND{"Hand-craftable with solid ingredients?"}
+    INGREDIENTS["Recursively satisfy ingredients"]
+    EMIT_CRAFT["Emit factory_craft<br/>At most 20 batches"]
+    PRODUCTION["Prepare native machine production"]
+    MACHINE["Ensure compatible machine exists<br/>Otherwise need its item, then factory_place"]
+    CONFIGURE["Configure unlocked recipe if necessary"]
+    ENERGY{"Machine energy source?"}
+    FUEL["Need coal and insert into burner<br/>Respect native stack capacity"]
+    POWER["Ensure offshore pump, boiler and steam engine<br/>Connect water and steam<br/>Fuel boiler"]
+    POWER_LINK["Need poles and connect electricity"]
+    INPUTS["Account for buffered inputs<br/>and currently in-flight crafting"]
+    INPUT_KIND{"Missing ingredient type?"}
+    SOLID["Need solid ingredient<br/>Then emit factory_insert"]
+    FLUID["Resolve water pump, powered oil pumpjack,<br/>or recursive fluid recipe"]
+    FLUID_BUFFERS["For multi-fluid outputs,<br/>ensure tanks and output connections"]
+    CONNECT["Ensure physical connection<br/>Need carried pipes or poles<br/>Bound construction budget"]
+    EMIT_CONNECT["Emit factory_connect"]
+    PRODUCTION_WAIT["Wait for native machine output"]
+    RESEARCH["Ensure technology"]
+    TECH_DONE{"Already researched?"}
+    TECH_PARENTS["Recursively ensure prerequisite technologies"]
+    TRIGGER{"Research trigger?"}
+    TRIGGER_CRAFT["Need and natively produce required item<br/>Wait for technology unlock"]
+    TRIGGER_OIL["Ensure native oil extraction<br/>Wait for technology unlock"]
+    TECH_LAB["Ensure powered lab"]
+    TECH_ACTIVE{"Research active?"}
+    EMIT_RESEARCH["Emit factory_research"]
+    SCIENCE_INPUT["Need required science packs<br/>Insert into lab"]
+    RESEARCH_WAIT["Wait for observed research increment<br/>or technology completion"]
+    EMITTED["Return first bounded prerequisite plan<br/>Replan after observed effects"]
+
+    COMPILE -->|Factory goal| FP
+    FP --> FP_READY
+    FP_READY -->|No| BLOCKED
+    FP_READY -->|Yes| FP_BIND
+    FP_BIND -->|No| EMIT_BIND --> EMITTED
+    FP_BIND -->|Yes| CRAFT_BUSY
+    CRAFT_BUSY -->|Yes| EMIT_WAIT --> EMITTED
+    CRAFT_BUSY -->|No| BOILER_LOW
+    BOILER_LOW -->|Yes| FUEL
+    BOILER_LOW -->|No| GOAL_BRANCH
+    GOAL_BRANCH -->|Iron smelting| NEED_IRON --> NEED
+    GOAL_BRANCH -->|Automation science| NEED_SCIENCE --> NEED
+    GOAL_BRANCH -->|Steam power| NEED_LAB --> MACHINE
+    GOAL_BRANCH -->|Rocket launch| NEED_ROCKET_TECH --> RESEARCH
+    NEED --> HAVE
+    HAVE -->|Yes| EMITTED
+    HAVE -->|No| OUTPUT
+    OUTPUT -->|Yes| EMIT_EXTRACT --> EMITTED
+    OUTPUT -->|No| RAW
+    RAW -->|Yes| RAW_EVIDENCE
+    RAW_EVIDENCE -->|No| EMIT_EXPLORE --> EMITTED
+    RAW_EVIDENCE -->|Yes| EMIT_GATHER --> EMITTED
+    RAW -->|No| RECIPE --> UNLOCKED
+    UNLOCKED -->|No| RESEARCH
+    UNLOCKED -->|Yes| HAND
+    HAND -->|Yes| INGREDIENTS
+    INGREDIENTS -->|Missing dependency| NEED
+    INGREDIENTS -->|All available| EMIT_CRAFT --> EMITTED
+    HAND -->|No| PRODUCTION
+    PRODUCTION --> MACHINE --> CONFIGURE --> ENERGY
+    MACHINE -->|Construction material missing| NEED
+    MACHINE -->|Placement or configuration needed| EMITTED
+    CONFIGURE -->|Configuration action needed| EMITTED
+    ENERGY -->|Electric| POWER --> POWER_LINK
+    ENERGY -->|Burner| FUEL
+    ENERGY -->|Already supplied| INPUTS
+    POWER_LINK --> CONNECT
+    FUEL -->|Coal missing| NEED
+    FUEL -->|Transfer needed| EMITTED
+    FUEL -->|Fuel sufficient| INPUTS
+    INPUTS --> INPUT_KIND
+    INPUT_KIND -->|Solid missing| SOLID --> NEED
+    SOLID -->|Available for transfer| EMITTED
+    INPUT_KIND -->|Fluid missing| FLUID
+    FLUID -->|Needs production| RECIPE
+    FLUID -->|Multi-fluid output| FLUID_BUFFERS --> CONNECT
+    FLUID -->|Source available| CONNECT
+    CONNECT -->|Materials missing| NEED
+    CONNECT -->|Not connected| EMIT_CONNECT --> EMITTED
+    CONNECT -->|Already connected| INPUTS
+    INPUT_KIND -->|Inputs satisfied| PRODUCTION_WAIT --> EMIT_WAIT
+    RESEARCH --> TECH_DONE
+    TECH_DONE -->|No| TECH_PARENTS --> TRIGGER
+    TECH_PARENTS -->|Parent missing| RESEARCH
+    TRIGGER -->|Craft item| TRIGGER_CRAFT --> NEED
+    TRIGGER -->|Mine crude oil| TRIGGER_OIL --> FLUID
+    TRIGGER -->|Unsupported trigger| BLOCKED
+    TRIGGER -->|Science-based| TECH_LAB --> TECH_ACTIVE
+    TECH_LAB -->|Infrastructure missing| MACHINE
+    TECH_ACTIVE -->|None| EMIT_RESEARCH --> EMITTED
+    TECH_ACTIVE -->|Different technology active| RESEARCH
+    TECH_ACTIVE -->|Requested technology active| SCIENCE_INPUT
+    SCIENCE_INPUT -->|Packs missing| NEED
+    SCIENCE_INPUT -->|Lab needs insertion| EMITTED
+    SCIENCE_INPUT -->|Lab supplied| RESEARCH_WAIT --> EMIT_WAIT
+    TECH_DONE -->|Prerequisite satisfied| RECIPE
+    TECH_DONE -->|Rocket-silo research satisfied| SILO_READY
+    SILO_READY -->|Yes| EMIT_LAUNCH --> EMITTED
+    SILO_READY -->|No| PARTS_DONE
+    PARTS_DONE -->|Yes| EMIT_WAIT
+    PARTS_DONE -->|No| ROCKET_BUILD --> PRODUCTION
+    EMITTED --> FILTER
+end
+
+subgraph JEV["5. Jev candidate judgment"]
+    JEV_BATCH["Build one independent question batch<br/>Facts, active goal and last eight history events<br/>Up to 16 candidate plans"]
+    SIZE{"Serialized request at most 32000 bytes?"}
+    TRIM["Drop final candidate and rebuild<br/>No candidates left means no valid decision"]
+    QUESTIONS["Ask candidate choice plus, for EACH plan:<br/>benefit score 0–2<br/>disruption score 0–2<br/>needs-observation value 0–1"]
+    API["Call Jev once for the batch"]
+    API_RESULT{"Provider result?"}
+    ANSWER_VALID{"Exact answer keys and types?<br/>Finite scores and confidences?<br/>Valid probability distributions?<br/>Choice and score consistency?"}
+    GLOBAL_GATE{"Model chose observe<br/>or choice confidence below 0.45?"}
+    PER_PLAN["Exclude each candidate if:<br/>needs-observation at least 0.5<br/>or benefit/disruption confidence below 0.45"]
+    UTILITY["Rank remaining candidates:<br/>choice probability + benefit / 4<br/>minus disruption / 8<br/>minus 0.02 per step"]
+    WINNER{"At least one eligible candidate?"}
+    JEV_CHOSEN["Select maximum-utility candidate"]
+    NO_DECISION["No usable model decision"]
+    FALLBACK_POLICY{"Hybrid policy?"}
+    FALLBACK["Deterministic fallback over available plans<br/>Minimum step count, then plan ID"]
+    STALL["Strict Jev: observe only<br/>Increment stalled-decision count"]
+    STALL_LIMIT{"Four stalled decisions reached?"}
+
+    JEV_BATCH --> SIZE
+    SIZE -->|No| TRIM
+    TRIM -->|Candidates remain| JEV_BATCH
+    TRIM -->|None remain| NO_DECISION
+    SIZE -->|Yes| QUESTIONS --> API --> API_RESULT
+    API_RESULT -->|Timeout, connection error, HTTP 408/429/5xx| NO_DECISION
+    API_RESULT -->|Other unhandled error| GAME_ERROR
+    API_RESULT -->|Answers received| ANSWER_VALID
+    ANSWER_VALID -->|No| NO_DECISION
+    ANSWER_VALID -->|Yes| GLOBAL_GATE
+    GLOBAL_GATE -->|Yes| NO_DECISION
+    GLOBAL_GATE -->|No| PER_PLAN --> UTILITY --> WINNER
+    WINNER -->|Yes| JEV_CHOSEN --> COMMIT
+    WINNER -->|No| NO_DECISION
+    NO_DECISION --> FALLBACK_POLICY
+    FALLBACK_POLICY -->|Yes| FALLBACK --> COMMIT
+    FALLBACK_POLICY -->|No| STALL --> STALL_LIMIT
+    STALL_LIMIT -->|Yes| BLOCKED
+    STALL_LIMIT -->|No| RECORD
+end
+
+subgraph NATIVE["6. Native action execution"]
+    ACTION_TYPE{"Committed action type?"}
+    NATIVE_GUARD["Require original connected character<br/>Cheat mode off and game speed 1<br/>No teleportation or inventory grants"]
+    MOVE["Native pathfinder and walking_state<br/>Actual game ticks move the character"]
+    MINE_TARGET["Select current minable resource<br/>Use native cursor visibility"]
+    MINE_REACH{"Already within native reach?"}
+    MINE_APPROACH["Choose actor-facing collision-free approach<br/>Walk normally"]
+    MINE["Enforce reach and selected entity<br/>Set mining_state<br/>Measure engine-produced inventory gain"]
+    PLACE["Find native-buildable site and direction<br/>Walk into reach<br/>Transfer carried item to cursor<br/>Build and verify item debit"]
+    TRANSFER["Walk into interaction reach<br/>Transfer paid inventory<br/>Verify receipt and entity identity"]
+    CONNECT_NATIVE["Choose compatible native connection endpoints<br/>Plan bounded pipe or pole route<br/>Place each carried connector normally"]
+    CRAFT_NATIVE["Queue native hand-crafting<br/>Consume real ingredients"]
+    CONFIG_NATIVE["Configure unlocked machine recipe<br/>Within native interaction reach"]
+    RESEARCH_NATIVE["Start available native research<br/>Labs consume actual science packs"]
+    LAUNCH_NATIVE["Approach silo and request launch<br/>Native launch counter is authoritative"]
+    WAIT_NATIVE["Wait for actual production or research<br/>No simulated elapsed-time completion"]
+    EXPLORE_NATIVE["Generate bounded normal terrain<br/>No resource grants"]
+    BIND_NATIVE["Bind existing player and character<br/>Never recreate actor during resume"]
+    CONTROL_GUARD["During walking/mining:<br/>Renew 180-tick control lease<br/>Poll native state about every 0.1 seconds<br/>Check actor, speed, reach and progress"]
+    CONTROL_RESULT{"Completed before failure or timeout?"}
+    NATIVE_RETURN["Return success or raise error<br/>Controller still verifies postcondition"]
+
+    ACTION_TYPE --> NATIVE_GUARD
+    NATIVE_GUARD -->|Walk| MOVE
+    NATIVE_GUARD -->|Gather| MINE_TARGET --> MINE_REACH
+    MINE_REACH -->|Yes| MINE
+    MINE_REACH -->|No| MINE_APPROACH --> MOVE
+    MOVE --> CONTROL_GUARD
+    CONTROL_GUARD --> CONTROL_RESULT
+    CONTROL_RESULT -->|Walk complete, mining still required| MINE
+    MINE --> CONTROL_GUARD
+    CONTROL_RESULT -->|Action complete| NATIVE_RETURN
+    CONTROL_RESULT -->|Failure, lease expiry or timeout| NATIVE_RETURN
+    NATIVE_GUARD -->|Place| PLACE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Insert or extract| TRANSFER --> NATIVE_RETURN
+    NATIVE_GUARD -->|Connect| CONNECT_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Craft| CRAFT_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Configure| CONFIG_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Research| RESEARCH_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Launch| LAUNCH_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Wait or idle| WAIT_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Explore| EXPLORE_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Bind| BIND_NATIVE --> NATIVE_RETURN
+    NATIVE_GUARD -->|Invariant violated| NATIVE_RETURN
+end
+
+subgraph VERIFY["7. Pending-action verification"]
+    VERIFY_PENDING["Observe pending action before<br/>any new plan or mutation"]
+    PENDING_EFFECT{"Expected effect now observed?"}
+    SAFE_RECONCILE{"Narrow reconciliation predicate satisfied?"}
+    ABSENCE["Placement: entity absent and materials retained<br/>Connection: zero connectors and materials retained<br/>Ambiguous gather: after a poll, positive inventory<br/>still below committed target"]
+    MAINTENANCE{"Waiting action and boiler fuel low?"}
+    REPLAN_FUEL["Clear nonmutating wait<br/>Replan boiler refueling"]
+    POLLS["Increment pending poll count"]
+    EXPIRED{"Step tick timeout or poll limit reached?<br/>Native factory poll limit: at least 1800"}
+    NONMUTATING{"Action is idle or factory_wait?"}
+    UNCERTAIN["Mark uncertain<br/>Preserve pending action and reservations<br/>Require repair or reconciliation"]
+    WAIT_OBSERVE["Observe again without redispatch<br/>Real game time advances naturally"]
+
+    VERIFY_PENDING --> PENDING_EFFECT
+    PENDING_EFFECT -->|Yes| VERIFIED
+    PENDING_EFFECT -->|No| SAFE_RECONCILE
+    SAFE_RECONCILE -. exact implemented predicates .-> ABSENCE
+    SAFE_RECONCILE -->|Yes| FAILPLAN
+    SAFE_RECONCILE -->|No| MAINTENANCE
+    MAINTENANCE -->|Yes| REPLAN_FUEL --> RECORD
+    MAINTENANCE -->|No| POLLS --> EXPIRED
+    EXPIRED -->|No| WAIT_OBSERVE --> RECORD
+    EXPIRED -->|Yes| NONMUTATING
+    NONMUTATING -->|Yes| FAILPLAN
+    NONMUTATING -->|No| UNCERTAIN --> RECORD
+end
+
+subgraph REPAIR["8. Automatic Codex repair"]
+    INCIDENT["Stop and reap gameplay process<br/>Capture immutable incident checkpoint<br/>and source baseline"]
+    REPAIR_TIME{"Time remains before original cutoff?"}
+    CODEX["Launch Codex repair agent<br/>Logs, source, checkpoint and native evidence<br/>Bounded repair attempt: up to 30 minutes"]
+    DIAGNOSE["Identify root cause<br/>Preserve session, pending semantics,<br/>failure history and fairness constraints"]
+    CHANGE_TYPE{"Code change needed?"}
+    OPERATIONAL["Evidence-backed operational reconciliation<br/>Tracked source and HEAD unchanged"]
+    IMPLEMENT["Implement focused fix<br/>Add regression tests<br/>Run focused and full tests"]
+    REVIEW["Independent exact-head source review"]
+    PUBLISH["Commit and push repair branch<br/>Open or update pull request"]
+    CI{"Required checks green<br/>and exact-head review approved?"}
+    MERGE["Merge without bypass<br/>Synchronize local main,<br/>origin/main and fork/main"]
+    RESULT["Write structured repair result<br/>With concrete evidence"]
+    ACCEPT["Supervisor independently verifies result<br/>Session and pending-state preservation<br/>Failure counts not reduced<br/>Code identity, clean worktree, review,<br/>checks, merge, remotes and tests"]
+    ACCEPTED{"Repair accepted?"}
+    RETRY["Keep gameplay stopped<br/>Record rejection or blocker<br/>Back off, up to 15 minutes"]
+    READY["Clear repair-required gate<br/>Keep original world, checkpoint and deadline"]
+
+    INCIDENT --> REPAIR_TIME
+    REPAIR_TIME -->|No| STOP
+    REPAIR_TIME -->|Yes| CODEX --> DIAGNOSE --> CHANGE_TYPE
+    CHANGE_TYPE -->|No| OPERATIONAL --> RESULT
+    CHANGE_TYPE -->|Yes| IMPLEMENT --> REVIEW --> PUBLISH --> CI
+    CI -->|No| IMPLEMENT
+    CI -->|Yes| MERGE --> RESULT
+    RESULT --> ACCEPT --> ACCEPTED
+    CODEX -->|Timeout or failed attempt| RETRY
+    ACCEPTED -->|No| RETRY --> REPAIR_TIME
+    ACCEPTED -->|Yes| READY --> DEADLINE
+end
