@@ -8,6 +8,7 @@ from dataclasses import replace
 from ..craft_jobs import CraftJob
 from ..skills import Plan, Step
 from .ready_work import ReadyWorkPlanner
+from .demand import SupplyLedger
 
 
 def research_demands(snapshot, catalog, *, early: bool = False) -> list[tuple[str, int]]:
@@ -46,8 +47,14 @@ def independent_candidates(goal, snapshot, catalog, job: CraftJob | None = None,
         view.factory["crafting_queue"] = 0  # Permit planning, never dispatch permission.
         for item, amount in job.outputs.items():
             view.inventory[item] = max(view.inventory.get(item, 0), job.baseline[item] + amount)
+    ledger = SupplyLedger.capture(snapshot, catalog, job=job)
+    def new_planner():
+        worker = planner_type(catalog, view, goal)
+        worker.ledger = ledger
+        worker.allow_service_visits = False
+        return worker
     candidates = []
-    worker = planner_type(catalog, view, goal)
+    worker = new_planner()
     # Keep the existing boiler alive while handcrafting; do not build new power.
     if job and "utility:boiler" in worker.entities:
         try:
@@ -62,7 +69,7 @@ def independent_candidates(goal, snapshot, catalog, job: CraftJob | None = None,
             if job and item in job.outputs:
                 continue
             try:
-                worker = planner_type(catalog, view, goal)
+                worker = new_planner()
                 if snapshot.inventory.get(item, 0) >= amount:
                     plan = worker._transfer("utility:lab", item, amount)
                 else:
@@ -75,9 +82,11 @@ def independent_candidates(goal, snapshot, catalog, job: CraftJob | None = None,
                     if probes >= 32:
                         break
                     probes += 1
-                    probe = planner_type(catalog, view, goal)
+                    probe = new_planner()
                     probe.focus = worker.focus
                     probe.raw_targets = dict(worker.raw_targets)
+                    probe.demands = dict(worker.demands)
+                    probe.speculative = True
                     try:
                         alternative = probe._need(material, target)
                     except (KeyError, ValueError):
@@ -88,7 +97,7 @@ def independent_candidates(goal, snapshot, catalog, job: CraftJob | None = None,
                 continue
     if job:
         try:
-            candidates.extend(planner_type(catalog, view, goal).candidates())
+            candidates.extend(new_planner().candidates())
         except (KeyError, ValueError):
             pass  # Unsupported lookahead cannot bypass active production rules.
     unique = {}
