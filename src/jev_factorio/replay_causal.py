@@ -118,6 +118,9 @@ def audit_producer(events: list[dict], report) -> None:
                 chosen_action = selection["payload"].get("action")
                 if chosen_action is not None and chosen_action != payload.get("action"):
                     issue("action_selection_conflict", "Prepared action differs from recorded selection")
+                chosen_plan = selection["payload"].get("plan_id")
+                if chosen_plan is not None and chosen_plan != plan:
+                    issue("plan_selection_conflict", "Prepared action differs from recorded plan selection")
             if not isinstance(action, str) or not action:
                 issue("missing_action_id", "Prepared action lacks identity", "gap")
             elif (trace, action) in actions:
