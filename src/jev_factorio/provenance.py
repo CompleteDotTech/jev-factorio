@@ -98,6 +98,8 @@ def source_revision(cwd: Path, *, timeout: float = 10,
         return included
 
     try:
+        if Path(os.fsdecode(git("rev-parse", "--show-toplevel")).rstrip("\n")).resolve() != root:
+            return None
         head = git("rev-parse", "HEAD").decode("ascii").strip()
         if not _SHA.fullmatch(head):
             return None

@@ -4,6 +4,7 @@ from __future__ import annotations
 from importlib.resources import files
 
 from ..factory_contract import validate_command
+from ..telemetry import Trace, phase
 
 
 class CraftJobFactory:
@@ -28,10 +29,13 @@ class CraftJobFactory:
         snapshot.inventory = dict(inventory)
         return snapshot
 
-    def execute(self, action: str, parameters: dict) -> str:
+    def execute(self, action: str, parameters: dict, *, trace: Trace | None = None) -> str:
         if action != "factory_craft_job":
-            return self.native.execute(action, parameters)
+            if trace is None:
+                return self.native.execute(action, parameters)
+            return self.native.execute(action, parameters, trace=trace)
         validate_command(action, parameters)
-        self.native.call("begin_craft_job", parameters["receipt"],
-                         parameters["recipe"], parameters["batches"])
+        with phase("transfer_rpc", trace):
+            self.native.call("begin_craft_job", parameters["receipt"],
+                             parameters["recipe"], parameters["batches"])
         return "Native craft request returned; receipt and output require observation"

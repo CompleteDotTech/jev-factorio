@@ -16,22 +16,40 @@ from .craft_jobs import CraftJob, InvalidCraftEvidence
 from .memory import CampaignMemory
 from .planning.background_work import background_wait, independent_candidates
 from .skills import Plan
+from .telemetry import utc_now, validate_attempt
 
 
 @dataclass
 class BackgroundMemory(CampaignMemory):
-    # Named extension, not the unrelated schema-2 attempt-evidence proposal.
-    # A legacy reader rejects these unknown fields rather than dropping a job.
-    background_schema: int = 1
+    background_schema: int = 2
     background_job: dict | None = None
+    background_attempt: dict | None = None
 
     @classmethod
     def load(cls, path: Path, session_id: str, target: str) -> BackgroundMemory:
         memory = super().load(path, session_id, target)
-        if type(memory.background_schema) is not int or memory.background_schema != 1:
+        if type(memory.background_schema) is not int or memory.background_schema not in {1, 2}:
             raise ValueError("Unsupported background checkpoint extension")
+        if memory.background_schema == 1:
+            if memory.background_attempt is not None:
+                raise ValueError("Legacy background checkpoint has unexpected attempt")
+            if memory.background_job is None:
+                memory.background_schema = 2
+        elif (memory.background_job is None) != (memory.background_attempt is None):
+            raise ValueError("Background job and attempt identity must coexist")
         if memory.background_job is not None:
             job = CraftJob.from_dict(memory.background_job)
+            attempt = memory.background_attempt
+            if attempt is not None:
+                validate_attempt(attempt)
+                if (attempt["action"] != "factory_craft_job"
+                        or attempt["plan_id"] != job.plan_id
+                        or attempt["step_index"] != 0
+                        or attempt["receipt"] != job.parameters["receipt"]
+                        or attempt["started_tick"] > job.started_tick
+                        or (memory.attempt and attempt["id"] == memory.attempt["id"])
+                        or any(item["id"] == attempt["id"] for item in memory.attempt_outcomes)):
+                    raise ValueError("Background attempt identity mismatch")
             if (job.session_id != session_id or job.goal != memory.active_goal
                     or job.started_tick > memory.last_tick
                     or job.last_progress_tick > memory.last_tick
@@ -89,10 +107,10 @@ class BackgroundWorkLoop(HierarchicalLoop):
         data = self.memory.background_job if self.memory else None
         return CraftJob.from_dict(data) if data is not None else None
 
-    def _observe(self):
+    def _observe(self, stage="observe"):
         if self._save_poisoned:
             raise RuntimeError("Checkpoint persistence failed; reconstruct before continuing")
-        snapshot = super()._observe()
+        snapshot = super()._observe(stage)
         job = self._job()
         if job:
             try:
@@ -106,6 +124,15 @@ class BackgroundWorkLoop(HierarchicalLoop):
             else:
                 self.memory.background_job = None if complete else job.to_dict()
                 if complete:
+                    attempt = self.memory.background_attempt
+                    if attempt is not None:
+                        self.memory.attempt_outcomes.append({
+                            **deepcopy(attempt), "outcome": "verified", "finished_tick": snapshot.tick,
+                            "finished_at_utc": utc_now(), "latency_seconds": None,
+                        })
+                        self.memory.attempt_outcomes = self.memory.attempt_outcomes[-64:]
+                    self.memory.background_attempt = None
+                    self.memory.background_schema = 2
                     self.memory.event("background_job_completed", job=job.parameters["receipt"],
                                       plan=job.plan_id, outputs=job.outputs, tick=snapshot.tick)
             # Persist updates before another action; this also protects the
@@ -127,8 +154,9 @@ class BackgroundWorkLoop(HierarchicalLoop):
             super()._refresh_goals(snapshot)
 
     def _record_extras(self) -> dict:
-        return {"background_work": True, "background_schema": 1,
-                "background_job": deepcopy(self.memory.background_job)}
+        return {"background_work": True, "background_schema": self.memory.background_schema,
+                "background_job": deepcopy(self.memory.background_job),
+                "background_attempt": deepcopy(self.memory.background_attempt)}
 
     def _admit_background(self, snapshot) -> bool:
         if (self.memory.status != "running" or self.memory.background_job is not None
@@ -143,6 +171,8 @@ class BackgroundWorkLoop(HierarchicalLoop):
         except InvalidCraftEvidence:
             return False  # Keep pending and its original deadline; never retry.
         self.memory.background_job = job.to_dict()
+        self.memory.background_attempt = deepcopy(self.memory.attempt)
+        self.memory.background_schema = 2
         self.memory.event("background_job_admitted", job=job.parameters["receipt"],
                           plan=plan.id, inputs_paid=job.inputs, outputs_locked=job.outputs,
                           tick=snapshot.tick)
@@ -175,6 +205,7 @@ class BackgroundWorkLoop(HierarchicalLoop):
                    and self._step_allowed(candidate.steps[0], snapshot)
                    for candidate in candidates):
                 self.memory.event("background_wait_yielded", plan=plan.id, tick=snapshot.tick)
+                self._finish_attempt(snapshot, "wait_replanned")
                 self._clear_plan()
                 return self._record(snapshot, "observe", "Yield passive wait to independent work")
         return super()._verify_pending(snapshot)
