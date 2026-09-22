@@ -260,7 +260,7 @@ class Supervisor:
             raise ValueError("Checkpoint status is invalid")
         return checkpoint
 
-    def initialize(self) -> None:
+    def initialize(self, *, record_only: bool = False) -> None:
         cutoff = self.config.started_at + self.config.duration_hours * 3600
         identity = {"session_id": self.config.session_id,
                     "checkpoint": str(self.config.checkpoint.resolve()),
@@ -274,7 +274,11 @@ class Supervisor:
         else:
             self.state = {**identity, "attempt": 0, "phase": "ready", "process": None}
             self.save()
+        if record_only and self.state.get("process"):
+            raise ValueError("Manual intervention requires no saved process; recover supervision separately")
         self.initialize_provenance(existing=existing)
+        if record_only:
+            return
         self.recover_process()
         self.close_interrupted_attempt()
         if not self.state.get("repair_required"):
@@ -745,7 +749,7 @@ Only report repaired when every acceptance requirement is verified.
                 raise RuntimeError("Another supervisor owns this repository") from error
             if manual_intervention is not None and not self.state_path.exists():
                 raise ValueError("Manual intervention requires an existing supervised run")
-            self.initialize()
+            self.initialize(record_only=manual_intervention is not None)
             if manual_intervention is not None:
                 self.record_manual_intervention(manual_intervention)
                 return 1 if self.stop_requested else 0
