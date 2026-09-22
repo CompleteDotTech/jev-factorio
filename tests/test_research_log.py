@@ -511,6 +511,14 @@ def test_direct_sink_artifact_aliases_rejected(make_log, name):
     rl.validate_output_paths(writer, writer.run_dir / "decisions.jsonl", None)
 
 
+def test_direct_sink_hardlink_alias_rejected(make_log, tmp_path):
+    writer = make_log()
+    alias = tmp_path / "legacy.jsonl"
+    os.link(writer.run_dir / "events.jsonl", alias)
+    with pytest.raises(ValueError, match="Output paths"):
+        rl.validate_output_paths(writer, alias)
+
+
 def test_missing_git_and_packages_stay_unknown(tmp_path, monkeypatch):
     monkeypatch.setattr(rl.subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError()))
     monkeypatch.setattr(rl.metadata, "version", lambda name: (_ for _ in ()).throw(rl.metadata.PackageNotFoundError()))
