@@ -74,8 +74,14 @@ class FactoryPlanner:
             return recipe, self._research(unlocks[0], path)
         return recipe, None
 
-    def _fair_resource_identity(self, item: str, target: int) -> str | None:
-        """Bind failures to a native resource site, including any replacement there."""
+    def _fair_resource_identity(self, item: str, target: int, quantity: int) -> str | None:
+        """Bind failures to the observed site and the exact native harvest.
+
+        The inventory target alone is not enough after an unacknowledged
+        partial harvest: the same target can remain while the only fair next
+        command is a smaller, observed remainder.  Including that remainder
+        avoids treating the new command as a retry of the ambiguous one.
+        """
         targets = self.factory.get("fair_resource_targets")
         evidence = targets.get(item) if isinstance(targets, dict) else None
         if not isinstance(evidence, dict):
@@ -99,7 +105,7 @@ class FactoryPlanner:
             },
         }
         identity = json.dumps(site, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        return f"{item}:target:{target}:site:{identity}"
+        return f"{item}:target:{target}:quantity:{quantity}:site:{identity}"
 
     def _need(self, item, amount, path=()):
         have = self.snapshot.inventory.get(item, 0)
@@ -121,7 +127,7 @@ class FactoryPlanner:
             # chooses any later tree normally.
             quantity = 1 if item == "wood" else min(50, missing)
             target = have + quantity
-            identity = self._fair_resource_identity(item, target)
+            identity = self._fair_resource_identity(item, target, quantity)
             if identity is None:
                 return self._explore(item)
             return self._plan(

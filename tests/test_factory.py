@@ -111,7 +111,7 @@ def test_raw_gather_commits_one_observed_fair_target_with_a_unique_postcondition
     first = FactoryPlanner(catalog(), state, "rocket_launch")._need("wood", 20)
 
     assert first.id == (
-        'factory:factory_gather:wood:target:13:site:'
+        'factory:factory_gather:wood:target:13:quantity:1:site:'
         '{"name":"tree-01","position":{"x":3.0,"y":4.0},"surface_index":1}'
     )
     assert first.steps[0].parameters == {"resource": "wood", "quantity": 1}
@@ -122,6 +122,26 @@ def test_raw_gather_commits_one_observed_fair_target_with_a_unique_postcondition
 
     assert later.id == first.id.replace("target:13:", "target:14:")
     assert later.steps[0].parameters == {"resource": "wood", "quantity": 1}
+
+
+def test_partial_fair_ore_harvest_replans_a_distinct_observed_remainder():
+    state = snapshot(inventory={"iron-ore": 0}, nearby_resources={"iron-ore": 5})
+    first = FactoryPlanner(catalog(), state, "rocket_launch")._need("iron-ore", 20)
+    assert first.steps[0].parameters == {"resource": "iron-ore", "quantity": 20}
+    assert first.steps[0].threshold == 20
+
+    # A lost acknowledgement may leave a real partial harvest.  Its failure
+    # budget must prevent replaying the old 20-ore command, while permitting
+    # one new fair command for the observed one-ore remainder at the same site.
+    state.inventory["iron-ore"] = 19
+    remainder = FactoryPlanner(catalog(), state, "rocket_launch")._need("iron-ore", 20)
+
+    assert remainder.id != first.id
+    assert remainder.steps[0].parameters == {"resource": "iron-ore", "quantity": 1}
+    assert remainder.steps[0].threshold == 20
+    assert [plan.id for plan in (first, remainder) if {first.id: 2}.get(plan.id, 0) < 2] == [
+        remainder.id
+    ]
 
 
 @pytest.mark.parametrize("changed_site", [
@@ -502,7 +522,9 @@ def test_native_observation_rejects_resource_without_a_native_site(monkeypatch, 
         "name": "tree-01" if item == "wood" else item, "surface_index": 1,
         **invalid_site,
     }}
-    assert FactoryPlanner(catalog(), state, "rocket_launch")._fair_resource_identity(item, 13) is None
+    assert FactoryPlanner(catalog(), state, "rocket_launch")._fair_resource_identity(
+        item, 13, 1
+    ) is None
 
 
 def test_native_fluid_points_keep_typed_filters_and_boiler_steam_output():
