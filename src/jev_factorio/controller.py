@@ -74,7 +74,6 @@ class HierarchicalLoop(AgentLoop):
         self._decision: Decision | None = None
         self.catalog = None
         self._trace = CausalTrace(research_log, "hierarchical", jev)
-        self._decision_client = self._trace.client(jev)
         if target in {"rocket_launch", "iron_smelting", "steam_power", "automation_science"} \
                 and hasattr(backend, "enable_factory"):
             self.catalog = backend.enable_factory()
@@ -413,7 +412,7 @@ class HierarchicalLoop(AgentLoop):
                         "ultimate_goal": self.memory.active_goal,
                     }
                 try:
-                    self._decision = select_plan(self._decision_client, state, plans, self.confidence_floor,
+                    self._decision = select_plan(self._trace.client(self.jev), state, plans, self.confidence_floor,
                                                  self.max_request_bytes)
                 except ValueError as error:
                     self._decision = Decision(None, "observe", str(error))

@@ -16,7 +16,7 @@ from jev_factorio.controller import HierarchicalLoop
 from jev_factorio.jev_client import MockJevClient
 from jev_factorio.loop import AgentLoop
 from jev_factorio.memory import CampaignMemory
-from jev_factorio.research_log import ResearchLog, ResearchLogError, verify_run
+from jev_factorio.research_log import ResearchLog, ResearchLogError, RunConfiguration, verify_run
 from jev_factorio.skills import Plan, Step
 
 
@@ -146,7 +146,7 @@ def test_successful_causal_chain_and_pending_poll_correlation(tmp_path, monkeypa
 
 def test_write_ahead_event_and_checkpoint_precede_real_call(tmp_path):
     checkpoint = tmp_path / "memory.json"
-    with ResearchLog(tmp_path / "run") as sink:
+    with ResearchLog(tmp_path / "run", RunConfiguration("mock", "hierarchical", "jev")) as sink:
         class InspectingBackend(Backend):
             def act(self, action):
                 pending = json.loads(checkpoint.read_text())["pending"]
@@ -157,7 +157,7 @@ def test_write_ahead_event_and_checkpoint_precede_real_call(tmp_path):
                 return super().act(action)
 
         HierarchicalLoop(InspectingBackend(), Client(), checkpoint=str(checkpoint), research_log=sink).step()
-    assert verify_run(tmp_path / "run")["clean_finish"]
+    assert verify_run(tmp_path / "run")["complete"]
 
 
 @pytest.mark.parametrize("failure,mutated,dispatch", [("action_prepared", False, "prepared"),
@@ -421,26 +421,26 @@ def test_cli_research_is_opt_in_and_legacy_file_remains_readable(tmp_path, monke
     records = [json.loads(line) for line in (tmp_path / "legacy.jsonl").read_text().splitlines()]
     assert records[-1]["status"] == "completed"
     assert "event_type" not in records[0]
-    assert verify_run(tmp_path / "run")["clean_finish"]
+    assert verify_run(tmp_path / "run")["complete"]
     assert "configured-but-not-used" not in (tmp_path / "run/manifest.json").read_text()
 
 
 @pytest.mark.parametrize("controller", [AgentLoop, HierarchicalLoop])
 def test_programmatic_legacy_path_alias_cannot_corrupt_sink(tmp_path, controller):
-    with ResearchLog(tmp_path / "run") as sink:
+    with ResearchLog(tmp_path / "run", RunConfiguration("mock", "hierarchical", "jev")) as sink:
         alias = tmp_path / "alias.jsonl"
         alias.hardlink_to(tmp_path / "run/events.jsonl")
         with pytest.raises(ValueError, match="separate"):
             controller(Backend(), Client(), research_log=sink, log_file=str(alias))
-    assert verify_run(tmp_path / "run")["clean_finish"]
+    assert verify_run(tmp_path / "run")["complete"]
 
 
 def test_programmatic_checkpoint_cannot_replace_manifest(tmp_path):
-    with ResearchLog(tmp_path / "run") as sink:
+    with ResearchLog(tmp_path / "run", RunConfiguration("mock", "hierarchical", "jev")) as sink:
         with pytest.raises(ValueError, match="separate"):
             HierarchicalLoop(Backend(), Client(), research_log=sink,
                              checkpoint=str(tmp_path / "run/manifest.json"), resume_controller=True)
-    assert verify_run(tmp_path / "run")["clean_finish"]
+    assert verify_run(tmp_path / "run")["complete"]
 
 
 def test_preconditions_still_rechecked_after_model_changes_world():

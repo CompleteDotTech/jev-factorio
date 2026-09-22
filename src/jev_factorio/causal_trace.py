@@ -39,8 +39,8 @@ def traced_step(method):
     """Keep uncaught failures visible without altering return values/retries."""
     @wraps(method)
     def wrapper(self, *args, **kwargs):
-        trace = self._trace
-        if not trace.enabled:
+        trace = getattr(self, "_trace", None)
+        if trace is None or not trace.enabled:
             return method(self, *args, **kwargs)
         trace.begin_step()
         try:
