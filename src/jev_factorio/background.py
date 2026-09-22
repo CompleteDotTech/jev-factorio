@@ -113,8 +113,13 @@ class BackgroundWorkLoop(HierarchicalLoop):
         snapshot = super()._observe(stage)
         job = self._job()
         if job:
+            attempt = self.memory.background_attempt
+            evidence = {**self._trace.attempt_ref(attempt["id"] if attempt else None),
+                        "plan_id": job.plan_id, "receipt": job.parameters["receipt"]}
             try:
-                complete = job.observe(snapshot)
+                complete = self._trace.call(
+                    "background_job_observed", lambda: job.observe(snapshot),
+                    details=evidence, result=lambda verified: {"verified": verified})
             except InvalidCraftEvidence as error:
                 job.failed = str(error)
                 self.memory.background_job = job.to_dict()
@@ -138,6 +143,10 @@ class BackgroundWorkLoop(HierarchicalLoop):
             # Persist updates before another action; this also protects the
             # release of output locks when completion is observed after restart.
             self._save()
+            if self.memory.background_job is None:
+                self._trace.emit("background_job_completed", {**evidence, "verified": True,
+                                                              "outputs": job.outputs})
+                self._trace.release_attempt(evidence["attempt_id"])
         return snapshot
 
     def _execution_barrier(self, snapshot) -> bool:
@@ -173,11 +182,16 @@ class BackgroundWorkLoop(HierarchicalLoop):
         self.memory.background_job = job.to_dict()
         self.memory.background_attempt = deepcopy(self.memory.attempt)
         self.memory.background_schema = 2
+        evidence = {**self._trace.attempt_ref(
+            self.memory.attempt["id"] if self.memory.attempt else None),
+                    "plan_id": plan.id, "receipt": job.parameters["receipt"],
+                    "inputs_paid": job.inputs, "outputs_locked": job.outputs}
         self.memory.event("background_job_admitted", job=job.parameters["receipt"],
                           plan=plan.id, inputs_paid=job.inputs, outputs_locked=job.outputs,
                           tick=snapshot.tick)
         self._clear_plan()  # Releases inputs proven already paid, not future outputs.
         self._save()
+        self._trace.emit("background_job_admitted", evidence)
         return True
 
     def _record(self, before, action, outcome, after=None, verified=False):

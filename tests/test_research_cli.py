@@ -73,7 +73,9 @@ def test_research_logging_preserves_gameplay_and_legacy_records(tmp_path, monkey
     else:
         from jev_factorio.evaluation import summarize
         assert summarize(logs[1])["evidence_class"] == "synthetic"
-    assert rl.verify_run(tmp_path / "research")["event_count"] == 4
+    evidence = [json.loads(line) for line in (tmp_path / "research/events.jsonl").read_text().splitlines()]
+    assert rl.verify_run(tmp_path / "research")["event_count"] == len(evidence)
+    assert sum(event["event_type"] == "step_finished" for event in evidence) == len(new)
 
 
 @pytest.mark.parametrize("with_legacy", [False, True])
@@ -87,7 +89,9 @@ def test_new_run_directory_and_optional_legacy_file(tmp_path, monkeypatch, with_
     result = rl.verify_run(run)
     assert result["complete"] is True and result["outcome"] == "returned"
     event_types = [json.loads(line)["event_type"] for line in (run / "events.jsonl").read_text().splitlines()]
-    assert event_types == ["run_started", "controller_initialized", "controller_stopped", "run_finished"]
+    assert event_types[:2] == ["run_started", "controller_initialized"]
+    assert event_types[-2:] == ["controller_stopped", "run_finished"]
+    assert event_types.count("step_started") == event_types.count("step_finished") == 2
     manifest = json.loads((run / "manifest.json").read_bytes())
     assert manifest["configuration"]["legacy_log_enabled"] is with_legacy
     assert manifest["configuration"]["steps"] == 2
