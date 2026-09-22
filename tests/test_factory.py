@@ -1087,6 +1087,7 @@ def test_unacknowledged_gather_with_observed_partial_yield_replans_without_dispa
     )
     state = snapshot(inventory={"wood": 8})
     controller = object.__new__(HierarchicalLoop)
+    controller.provenance = {}
     controller.target = "rocket_launch"
     controller.policy = "deterministic"
     controller.jev = None
@@ -1136,6 +1137,7 @@ def test_ambiguous_connection_reconciliation_fails_closed(change):
     }
     state.factory["force_entity_counts"] = {"pipe": 0}
     controller = object.__new__(HierarchicalLoop)
+    controller.provenance = {}
     controller.memory = CampaignMemory(
         session_id="test-factory", target="rocket_launch", active_goal="rocket_launch",
         active_plan=plan.to_dict(), pending={
@@ -1271,6 +1273,7 @@ def test_ambiguous_connection_reconciles_without_dispatching():
     state.factory["force_entity_counts"] = {"pipe": 0}
     controller = object.__new__(HierarchicalLoop)
     controller.target = "rocket_launch"
+    controller.provenance = {}
     controller.policy = "deterministic"
     controller.jev = None
     controller.log_file = None

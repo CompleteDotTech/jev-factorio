@@ -183,11 +183,15 @@ class Supervisor:
                 "incident": {**self.state["incident"], "incident_id": str(uuid4())},
             }, legacy_history=True)
 
-    def snapshot_revision(self) -> dict | None:
-        if self.remaining() <= 0 or self.stop_requested:
+    def snapshot_revision(self, *, manual: bool = False) -> dict | None:
+        if self.stop_requested or (not manual and self.remaining() <= 0):
             return None
-        return source_revision(self.config.cwd, timeout=min(10, self.remaining()),
-                               exclude_untracked=(self.config.state_dir, self.config.checkpoint))
+        return source_revision(
+            self.config.cwd, timeout=10 if manual else min(10, self.remaining()),
+            exclude_untracked=(self.config.state_dir, self.config.checkpoint),
+            exclude_untracked_prefixes=(self.config.checkpoint.with_name(
+                self.config.checkpoint.name + "."),),
+        )
 
     def record_revision(self, revision: dict | None, cause: str, **fields) -> bool:
         before = self.state.get("code_revision")
@@ -221,7 +225,7 @@ class Supervisor:
         ):
             raise ValueError("Manual intervention requires nonempty evidence strings")
         before = self.state.get("code_revision")
-        after = self.snapshot_revision()
+        after = self.snapshot_revision(manual=True)
         segment = self.state["segment"] + 1
         previous_segment = self.state["segment_id"]
         if not self.transition("manual_intervention", {
@@ -272,14 +276,7 @@ class Supervisor:
             self.save()
         self.initialize_provenance(existing=existing)
         self.recover_process()
-        if self.state.get("repair_attempt_open"):
-            incident_id = self.state.get("attempt_incident_id")
-            self.record_revision(self.snapshot_revision(), "interrupted_repair",
-                                 incident_id=incident_id, attempt=self.state["attempt"],
-                                 accepted=False, actor_type="unknown", intervention_type="repair_attempt")
-            self.transition("repair_interrupted", {"repair_attempt_open": False},
-                            incident_id=incident_id, attempt=self.state["attempt"],
-                            accepted=False, outcome="unknown", intervention_type="repair_attempt")
+        self.close_interrupted_attempt()
         if not self.state.get("repair_required"):
             try:
                 self.save(last_valid_checkpoint=self.checkpoint())
@@ -603,6 +600,18 @@ Only report repaired when every acceptance requirement is verified.
                     "pending", "active_plan", "step_index", "reservations"
                 )):
                     return False
+            extension_keys = ("background_schema", "background_job", "background_attempt",
+                              "input_routes_schema", "input_commitments")
+            if any(key in previous and current.get(key) != previous[key]
+                   for key in extension_keys):
+                return False
+            if previous.get("background_job") or previous.get("input_commitments"):
+                if any(current.get(key) != previous.get(key)
+                       for key in ("active_plan", "step_index", "reservations")):
+                    return False
+                history = previous.get("history", [])
+                if current.get("history", [])[:len(history)] != history:
+                    return False
             if any(current.get("failures", {}).get(key, 0) < count
                    for key, count in previous.get("failures", {}).items()):
                 return False
@@ -641,17 +650,36 @@ Only report repaired when every acceptance requirement is verified.
         self.save(incident=incident)
         self.event("repair_required", reason=reason)
 
+    def close_interrupted_attempt(self) -> None:
+        if not self.state.get("repair_attempt_open"):
+            return
+        incident_id = self.state.get("attempt_incident_id")
+        revision = self.snapshot_revision()
+        if not self.record_revision(revision, "interrupted_repair",
+                                    incident_id=incident_id, attempt=self.state["attempt"],
+                                    accepted=False, actor_type="unknown",
+                                    intervention_type="repair_attempt"):
+            return
+        self.transition("repair_interrupted", {"repair_attempt_open": False},
+                        incident_id=incident_id, attempt=self.state["attempt"],
+                        accepted=False, outcome="unknown", intervention_type="repair_attempt",
+                        source_before=self.state.get("attempt_source_before"),
+                        source_after=revision)
+
     def repair(self, reason: str) -> bool:
+        self.close_interrupted_attempt()
         self.begin_repair(reason)
         if self.stop_requested:
             return False
         incident = self.state["incident"]
         previous, source_before = incident["checkpoint"], incident["source"]
         attempt = self.state["attempt"] + 1
+        attempt_source_before = self.snapshot_revision()
         if not self.transition("repair_started", {
             "attempt": attempt, "repair_attempt_open": True,
             "attempt_incident_id": incident["incident_id"],
-        }, attempt=attempt, actor_type="repair_agent"):
+            "attempt_source_before": attempt_source_before,
+        }, attempt=attempt, actor_type="repair_agent", source_before=attempt_source_before):
             return False
         result = self.config.state_dir / f"repair-{attempt}.json"
         prompt = self.config.state_dir / f"repair-{attempt}.txt"
@@ -703,7 +731,7 @@ Only report repaired when every acceptance requirement is verified.
         durable = self.transition("repair_finished", updates, attempt=attempt,
             incident_id=incident["incident_id"], returncode=returncode, accepted=accepted,
             declared_kind=declared, intervention_type=intervention, actor_type="repair_agent",
-            source_before=incident.get("code_revision"), source_after=revision,
+            source_before=attempt_source_before, source_after=revision,
             result_file=result.name, result_sha256=hashlib.sha256(raw_result).hexdigest() if raw_result else None,
             correlation_complete=all(key in report for key in ("run_id", "incident_id", "attempt")))
         return accepted and durable
@@ -748,6 +776,7 @@ Only report repaired when every acceptance requirement is verified.
                             self.event("repair_error", error=str(error))
                         finally:
                             self.stop_process()
+                            self.close_interrupted_attempt()
                         failures = 0 if accepted else min(failures + 1, 6)
                         self.pause(min(900, self.config.backoff_seconds * 2 ** failures))
                 self.save(phase="stopped" if self.stop_requested else "cutoff")

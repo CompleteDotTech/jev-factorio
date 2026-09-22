@@ -54,18 +54,22 @@ def gameplay_context() -> dict:
 
 
 def source_revision(cwd: Path, *, timeout: float = 10,
-                    exclude_untracked: tuple[Path, ...] = ()) -> dict | None:
+                    exclude_untracked: tuple[Path, ...] = (),
+                    exclude_untracked_prefixes: tuple[Path, ...] = ()) -> dict | None:
     """Hash HEAD, index entries, tracked files and nonignored untracked files.
 
     Read-only Git commands are bounded and their output is never copied into
     logs. Runtime outputs may be excluded only when untracked; tracked files
-    are always included. Symlinks are hashed as links, not followed.
+    are always included. Prefix exclusions match full paths, allowing a
+    checkpoint path plus "." to exclude its atomic temporary siblings.
+    Symlinks are hashed as links, not followed.
     A missing Git checkout, timeout, or racing/unreadable file is unknown, never
     a fabricated clean revision. This is a source fingerprint, not a world save.
     """
     deadline = time.monotonic() + timeout
     root = cwd.resolve()
     excluded = tuple(path.resolve() for path in exclude_untracked)
+    excluded_prefixes = tuple(os.fspath(path.absolute()) for path in exclude_untracked_prefixes)
 
     def git(*args: str) -> bytes:
         remaining = deadline - time.monotonic()
@@ -79,17 +83,27 @@ def source_revision(cwd: Path, *, timeout: float = 10,
         digest.update(len(data).to_bytes(8, "big"))
         digest.update(data)
 
+    def untracked() -> set[bytes]:
+        names = git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0")
+        included = set()
+        for name in names:
+            if not name:
+                continue
+            path = (root / os.fsdecode(name)).absolute()
+            if any(path.is_relative_to(exclusion) for exclusion in excluded):
+                continue
+            if os.fspath(path).startswith(excluded_prefixes):
+                continue
+            included.add(name)
+        return included
+
     try:
         head = git("rev-parse", "HEAD").decode("ascii").strip()
         if not _SHA.fullmatch(head):
             return None
         index = git("ls-files", "--stage", "-z")
         tracked = {entry.split(b"\t", 1)[1] for entry in index.split(b"\0") if entry}
-        others = {name for name in git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0")
-                  if name}
-        others = {name for name in others if not any(
-            (root / os.fsdecode(name)).absolute().is_relative_to(path) for path in excluded
-        )}
+        others = untracked()
         digest = hashlib.sha256()
         add(digest, b"jev-factorio.source.v1")
         add(digest, index)
@@ -123,7 +137,8 @@ def source_revision(cwd: Path, *, timeout: float = 10,
             ):
                 return None
         if (git("rev-parse", "HEAD").decode("ascii").strip() != head
-                or git("ls-files", "--stage", "-z") != index):
+                or git("ls-files", "--stage", "-z") != index
+                or untracked() != others):
             return None
         return {"commit": head, "source_sha256": digest.hexdigest()}
     except (OSError, subprocess.SubprocessError, TimeoutError, UnicodeError, ValueError, IndexError):

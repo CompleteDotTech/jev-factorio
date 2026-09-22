@@ -18,7 +18,7 @@ def events(instance):
 
 
 def revision(instance, monkeypatch, value=A):
-    monkeypatch.setattr(instance, "snapshot_revision", lambda: value)
+    monkeypatch.setattr(instance, "snapshot_revision", lambda **kwargs: value)
     instance.record_revision(value, "test")
 
 
@@ -260,7 +260,7 @@ def test_manual_report_is_record_only_and_does_not_clear_repair_gate(supervisor,
 
 def test_manual_report_records_code_transition(supervisor, monkeypatch):
     revision(supervisor, monkeypatch)
-    monkeypatch.setattr(supervisor, "snapshot_revision", lambda: B)
+    monkeypatch.setattr(supervisor, "snapshot_revision", lambda **kwargs: B)
     supervisor.record_manual_intervention({"actor": "operator", "reason": "code_change", "evidence": ["review"]})
     row = events(supervisor)[-1]
     assert row["event"] == "code_revision_changed" and row["actor_type"] == "human"
@@ -340,3 +340,106 @@ def test_restart_closes_interrupted_attempt_without_accepting_it(supervisor, mon
     assert supervisor.state["repair_required"] and not supervisor.state["repair_attempt_open"]
     assert supervisor.state["incident"]["code_revision"] == A
     assert supervisor.state["code_revision"] == B
+
+
+@pytest.mark.parametrize("failure", ["prompt", "launch"])
+def test_retry_closes_every_failed_attempt(supervisor, monkeypatch, failure):
+    revision(supervisor, monkeypatch)
+    supervisor.begin_repair("blocked")
+    if failure == "prompt":
+        original = Path.write_text
+        def write(path, *args, **kwargs):
+            if path.suffix == ".txt":
+                raise OSError("prompt unavailable")
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "write_text", write)
+    else:
+        def launch(*args, **kwargs):
+            raise ValueError("launch unavailable")
+        monkeypatch.setattr(supervisor, "launch", launch)
+    assert supervisor.run() == 0
+    started = [row for row in events(supervisor) if row["event"] == "repair_started"]
+    closed = [row for row in events(supervisor) if row["event"] == "repair_interrupted"]
+    assert len(started) > 1
+    assert [row["attempt"] for row in started] == [row["attempt"] for row in closed]
+    assert not supervisor.state["repair_attempt_open"]
+    assert supervisor.state["repair_required"]
+
+
+def test_retry_records_own_source_and_preserves_incident_baseline(supervisor, monkeypatch):
+    revision(supervisor, monkeypatch)
+    supervisor.begin_repair("blocked")
+    values = iter([A, B, B, B])
+    monkeypatch.setattr(supervisor, "snapshot_revision", lambda: next(values))
+    monkeypatch.setattr(supervisor, "launch",
+                        lambda *args: setattr(supervisor, "process", FakeProcess(1)))
+    assert not supervisor.repair("blocked")
+    assert not supervisor.repair("blocked")
+    rows = [row for row in events(supervisor) if row["event"] == "repair_finished"]
+    assert rows[0]["source_before"] == A and rows[0]["source_after"] == B
+    assert rows[1]["source_before"] == rows[1]["source_after"] == B
+    assert supervisor.state["incident"]["code_revision"] == A
+    assert supervisor.state["attempt_source_before"] == B
+
+
+def test_manual_snapshot_after_cutoff_is_bounded_and_keeps_deadline(supervisor, monkeypatch):
+    supervisor.record_revision(A, "test")
+    cutoff = supervisor.state["cutoff"]
+    supervisor.clock.sleep(100)
+    calls = []
+    def snapshot(cwd, **kwargs):
+        calls.append(kwargs)
+        return B
+    monkeypatch.setattr(module, "source_revision", snapshot)
+    supervisor.record_manual_intervention(
+        {"actor": "operator", "reason": "code_change", "evidence": ["review"]})
+    assert calls[0]["timeout"] == 10
+    assert supervisor.state["code_revision"] == B
+    assert supervisor.state["cutoff"] == cutoff
+    assert events(supervisor)[-1]["source_after"] == B
+
+
+@pytest.mark.parametrize("extension", ["background_job", "input_commitments"])
+@pytest.mark.parametrize("changed", ["extension", "history", "reservations"])
+def test_repair_preserves_extension_locks_without_foreground_pending(
+        supervisor, tmp_path, extension, changed):
+    previous = {**supervisor.checkpoint(), extension: {"receipt": "paid"},
+                "history": [{"kind": "paid", "receipt": "paid"}],
+                "reservations": {"owner": {"iron-plate": 2}}}
+    atomic_json(supervisor.config.checkpoint, previous)
+    result = operational_result(supervisor, tmp_path)
+    assert supervisor.validate_repair(result, previous, ("head", "diff"))
+    current = {**previous}
+    current[extension if changed == "extension" else changed] = None if changed == "extension" else {}
+    atomic_json(supervisor.config.checkpoint, current)
+    assert not supervisor.validate_repair(result, previous, ("head", "diff"))
+
+
+@pytest.mark.parametrize("after_append", [False, True])
+def test_interrupted_attempt_outbox_replays_once(supervisor, monkeypatch, after_append):
+    revision(supervisor, monkeypatch)
+    supervisor.begin_repair("blocked")
+    supervisor.transition("repair_started", {
+        "attempt": 1, "repair_attempt_open": True, "attempt_source_before": A,
+        "attempt_incident_id": supervisor.state["incident"]["incident_id"],
+    })
+    append = module.append_audit
+    def fail(path, record):
+        if record["event"] == "repair_interrupted":
+            if after_append:
+                append(path, record)
+            raise OSError("interrupted audit append")
+        append(path, record)
+    monkeypatch.setattr(module, "append_audit", fail)
+    supervisor.close_interrupted_attempt()
+    assert supervisor.stop_requested
+    assert supervisor.state["audit_pending"]["event"] == "repair_interrupted"
+    monkeypatch.setattr(module, "append_audit", append)
+    supervisor.stop_requested = False
+    supervisor.initialize()
+    supervisor.initialize()
+    rows = [row for row in events(supervisor) if row["event"] == "repair_interrupted"]
+    assert len(rows) == 1
+    assert rows[0]["source_before"] == A
+    assert not supervisor.state["repair_attempt_open"]
+    assert supervisor.state["repair_required"]

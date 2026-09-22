@@ -1,4 +1,4 @@
-# Supervisor provenance (PR 3)
+# Supervisor provenance
 
 This change gives the supervisor, each gameplay child, incidents, and repair
 attempts a shared research identity. It is not a claim of autonomous completion
@@ -8,13 +8,13 @@ world/session and original-cutoff gates remain in place.
 
 ## Compatibility and scope
 
-The implementation base is `47a07010d5ff4ba3401657f23631564cf69b09ad`. The planned
-PR 1 research logging core and PR 2 causal instrumentation were not present in
-that tree. This PR therefore uses a small, independent `provenance.py` bridge and
+The research logging core in PR #5 owns the canonical research event stream.
+This feature uses a small, independent `provenance.py` bridge and
 adds fields to the existing supervisor audit and existing gameplay records. It
 does **not** introduce a competing general-purpose research event store, overwrite
 an experiment manifest, implement a hash chain, or claim replay completeness.
-A later core logger should consume the same validated context.
+Core and causal gameplay logging can join this journal using the validated
+context IDs; the supervisor journal is not a sealed causal event stream.
 
 `--log-file` remains unchanged. Without a supervised context, both controllers
 produce their existing records without additional fields. With supervision,
@@ -100,12 +100,13 @@ fingerprinted evidence.
 
 Source fingerprints include HEAD, staged/index entries, tracked file bytes and
 modes, and nonignored untracked files. Ignored credentials are not included.
-Untracked supervisor outputs/checkpoints are excluded from the fingerprint so
+Untracked supervisor outputs/checkpoints and their atomic temporary siblings
+are excluded from the fingerprint so
 writing telemetry does not itself create a code-change signal. Tracked files
 cannot be hidden by those exclusions. Symlinks are hashed as links, not followed.
 Git output/file contents from this new fingerprinting code are not exported.
 
-Fingerprints are sampled before gameplay launches and after repair attempts,
+Fingerprints are sampled before gameplay launches and before and after repair attempts,
 including rejection and interruption. A known source change rotates `segment_id`
 while preserving `run_id`; events carry before/after revisions. Dirty changes
 within the same commit are also detected. An unavailable Git checkout, timeout,
@@ -113,6 +114,14 @@ unreadable/racing file, or unsupported submodule produces `code_revision=null`.
 Known-to-unknown and unknown-to-known transitions are uncertainty boundaries, not
 assertions that a code change was proven. The initial segment is not itself an
 intervention.
+
+Each repair attempt persists its own `source_before`; the incident baseline
+remains immutable for acceptance checks across retries. Prompt or process launch
+failures close the open attempt before another attempt starts. Existing
+background jobs, attempt identity, input commitments, reservation locks, and
+their retained history cannot be erased by a repair acknowledgement.
+The final fingerprint check compares the untracked file set as well as HEAD and
+index, rejecting a concurrent source-file addition or removal as unknown.
 
 These are **observed boundaries**, not proof of when or by whom every file changed.
 There is no continuous filesystem observer. Treat mid-process edits, unreported
@@ -146,7 +155,9 @@ adding:
 
 This requires an existing supervised run and the same exclusive supervisor lock.
 It records the declaration and returns without gameplay or repair dispatch. It
-never clears `repair_required`, pending work, failure budgets, or incident history.
+samples source with a separate ten-second bound even after the gameplay cutoff,
+without extending that cutoff. It never clears `repair_required`, pending work,
+failure budgets, or incident history.
 The event is explicitly a declaration, not independent verification of what the
 human did. The report's canonical SHA-256 and evidence count are recorded instead
 of exporting arbitrary evidence text. Keep the report alongside the run artifacts.
