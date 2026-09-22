@@ -57,14 +57,18 @@ def validate_output_paths(sink: object, *paths: str | Path | None) -> None:
     run_dir = sink if isinstance(sink, (str, Path)) else getattr(sink, "run_dir", None)
     if run_dir is None:
         return
-    root = tuple(part.casefold() for part in Path(run_dir).resolve().parts)
-    reserved = {root + (name,) for name in ("manifest.json", "events.jsonl", "integrity.json")}
+    directory = Path(run_dir).resolve()
+    root = tuple(part.casefold() for part in directory.parts)
+    artifacts = [directory / name for name in ("manifest.json", "events.jsonl", "integrity.json")]
+    reserved = {root + (artifact.name,) for artifact in artifacts}
     for path in paths:
         if path is None:
             continue
         destination = tuple(part.casefold() for part in Path(path).resolve().parts)
         if (root[:len(destination)] == destination
-                or any(destination[:len(artifact)] == artifact for artifact in reserved)):
+                or any(destination[:len(artifact)] == artifact for artifact in reserved)
+                or (Path(path).exists() and any(
+                    artifact.exists() and Path(path).samefile(artifact) for artifact in artifacts))):
             raise ValueError("Output paths must not overwrite research artifacts or their directories")
 
 
