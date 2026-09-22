@@ -320,6 +320,139 @@ class HierarchicalLoop(AgentLoop):
             and 0 <= step.threshold - requested < observed < step.threshold
         )
 
+    def _prepared_transfer_never_entered_rpc(self, plan: Plan, step,
+                                             snapshot: GameSnapshot) -> bool:
+        """Authorize one retained transfer only when its native RPC never began.
+
+        A write-ahead ``prepared`` action normally remains potentially mutating:
+        a missing acknowledgement is not evidence that a transfer did not take
+        effect.  Native transfers are a narrowly different case.  Their durable
+        substage record is written before the transfer RPC, and the Lua endpoint
+        records its exact receipt before it returns.  If the original actor and
+        machine identity remain live, the source still contains the reservation,
+        and the transfer-RPC substage never began, re-entering the *same* pending
+        action cannot duplicate a prior transfer.
+
+        This intentionally does not cover ambiguous/returned actions, failed
+        approaches, legacy attempts, missing receipts, changed machines, or
+        ordinary mock commands.  Those states stay fail-closed for manual
+        reconciliation.
+        """
+        pending, attempt = self.memory.pending or {}, self.memory.attempt
+        parameters = step.parameters or {}
+        if not (
+            snapshot.world_kind == "fle"
+            and pending.get("dispatch") == "prepared"
+            and step.action in {"factory_insert", "factory_extract"}
+            and step.effect == "transfer"
+            and isinstance(attempt, dict)
+            and attempt.get("origin") == "new"
+            and attempt.get("action") == step.action
+            and attempt.get("receipt") == parameters.get("receipt")
+            and attempt.get("observation_error") is None
+            and snapshot.factory.get("player_bound") is True
+        ):
+            return False
+        role, item, quantity, receipt = (
+            parameters.get("role"), parameters.get("item"),
+            parameters.get("quantity"), parameters.get("receipt"),
+        )
+        machine = snapshot.factory.get("entities", {}).get(role, {})
+        stages = attempt.get("dispatch_phases")
+        if not (
+            isinstance(role, str) and isinstance(item, str)
+            and type(quantity) is int and quantity > 0
+            and isinstance(receipt, str)
+            and isinstance(stages, dict)
+            and stages.get("dispatch", {}).get("status") == "started"
+            and stages.get("approach", {}).get("status") in {"started", "returned"}
+            and "transfer_rpc" not in stages
+            and type(attempt.get("expected_unit_number")) is int
+            and machine.get("unit_number") == attempt["expected_unit_number"]
+            and receipt not in snapshot.factory.get("receipts", {})
+            and self._step_allowed(step, snapshot)
+        ):
+            return False
+        if step.action == "factory_insert":
+            return (
+                step.costs == {item: quantity}
+                and self.memory.reservations.get(plan.id) == step.costs
+                and snapshot.inventory.get(item, 0) >= quantity
+            )
+        return (
+            not step.costs
+            and self.memory.reservations.get(plan.id) == {}
+            and machine.get("output", {}).get(item, 0) >= quantity
+        )
+
+    def _dispatch_retained_transfer(self, plan: Plan, step, snapshot: GameSnapshot) -> dict:
+        """Dispatch the exact preserved native transfer, then verify its receipt."""
+        # Preserve the interrupted-phase proof before the normal dispatch tracing
+        # records the resumed call under the same bounded phase names.
+        self.memory.event(
+            "prepared_transfer_recovery_authorized",
+            attempt_id=self.memory.attempt["id"], plan=plan.id,
+            step_index=self.memory.step_index, receipt=step.parameters["receipt"],
+            expected_unit_number=self.memory.attempt["expected_unit_number"],
+            original_dispatch_phases=deepcopy(self.memory.attempt["dispatch_phases"]),
+            tick=snapshot.tick,
+        )
+        self._save()
+        self._trace.emit("prepared_transfer_recovery_authorized", {
+            **self._trace.pending_ref(plan.id, self.memory.step_index, self.memory.pending,
+                                      attempt_id=self.memory.attempt["id"]),
+            "receipt": step.parameters["receipt"],
+            "expected_unit_number": self.memory.attempt["expected_unit_number"],
+            "reason": "transfer_rpc_not_entered_with_retained_source",
+        })
+        try:
+            with phase("dispatch", self._diagnostic_trace):
+                outcome = self._trace.dispatch(
+                    lambda: (
+                        self.backend.execute_traced(step.action, step.parameters or {},
+                                                    self._diagnostic_trace)
+                        if getattr(self.backend, "execute_traced", None)
+                        else self.backend.execute(step.action, step.parameters or {})
+                    ),
+                    step.action, parameters=step.parameters, plan_id=plan.id,
+                    step_index=self.memory.step_index, pending=self.memory.pending,
+                    checkpointed=self.checkpoint is not None, attempt_id=self.memory.attempt["id"],
+                )
+        except ResearchLogError:
+            raise
+        except Exception as error:
+            self.memory.pending["dispatch"] = "ambiguous"
+            self.memory.event("recovery_dispatch_error", error_type=error_code(error),
+                              tick=snapshot.tick)
+            return self._record(snapshot, step.action,
+                                "Retained transfer dispatch remained ambiguous", snapshot)
+        self.memory.pending["dispatch"] = "returned"
+        self._save()
+        self._trace.observation_phase = "post_recovery_dispatch"
+        after = self._observe("post_dispatch_observe")
+        with phase("verification", self._diagnostic_trace):
+            verified = self._trace.verify(
+                step, after, plan_id=plan.id, index=self.memory.step_index,
+                pending=self.memory.pending, phase="post_recovery_dispatch",
+                attempt_id=self.memory.attempt["id"],
+            )
+        if verified:
+            self._finish_attempt(after)
+            self.memory.status, self.memory.reason = "running", ""
+            self.memory.release(plan.id)
+            self.memory.pending = None
+            self._trace.clear_pending()
+            self.memory.step_index += 1
+            self.memory.stalled_decisions = 0
+            self.memory.event("step_verified", plan=plan.id, action=step.action,
+                              tick=after.tick)
+            if self.memory.step_index == len(plan.steps):
+                self._clear_plan()
+            self._refresh_goals(after)
+        return self._record(snapshot, step.action,
+                            "Re-dispatched retained transfer after proving its RPC never began",
+                            after, verified)
+
     def _verify_pending(self, snapshot: GameSnapshot) -> dict:
         plan = Plan.from_dict(self.memory.active_plan)
         step = plan.steps[self.memory.step_index]
@@ -341,6 +474,8 @@ class HierarchicalLoop(AgentLoop):
                 self._clear_plan()
             self._refresh_goals(snapshot)
             return self._record(snapshot, "verify", "Observed expected postcondition", verified=True)
+        if self._prepared_transfer_never_entered_rpc(plan, step, snapshot):
+            return self._dispatch_retained_transfer(plan, step, snapshot)
         if self._absent_ambiguous_placement(plan, step, snapshot):
             name = step.parameters["name"]
             reason = (f"Observed no durable {name} placement and retained all reserved "
