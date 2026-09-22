@@ -75,6 +75,31 @@ def test_never_waits_for_chest_to_produce_more_items():
     assert step.action == "factory_extract" and step.parameters["quantity"] == 2
 
 
+@pytest.mark.parametrize("available", [2, 20])
+def test_available_chest_stock_preempts_furnace_batch_wait(available):
+    data, state = production_state()
+    state.factory["entities"]["stock:chest"] = machine(
+        "wooden-chest", output={"iron-plate": available}
+    )
+    plans, blocker = compile_ready_factory("iron_smelting", state, data)
+    assert not blocker
+    step = plans[0].steps[0]
+    assert step.action == "factory_extract"
+    assert step.parameters["role"] == "stock:chest"
+    assert step.parameters["quantity"] == min(10, available)
+
+
+def test_other_small_active_furnace_does_not_defeat_batch_wait():
+    data, state = production_state()
+    state.factory["entities"]["recipe:alternate-iron"] = machine(
+        recipe="alternate-iron", output={"iron-plate": 1},
+        input={"iron-ore": 8}, crafting=True, fuel={"coal": 10}
+    )
+    data.recipes["alternate-iron"] = data.recipes["iron-plate"]
+    step = ReadyWorkPlanner(data, state, "iron_smelting")._need("iron-plate", 20).steps[0]
+    assert step.action == "factory_wait"
+
+
 def test_independent_copper_work_is_offered_while_iron_smelts():
     data, state = production_state()
     before = deepcopy(state)
