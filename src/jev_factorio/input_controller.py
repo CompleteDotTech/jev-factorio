@@ -27,8 +27,8 @@ class InputRouteMixin:
         elif getattr(backend, "input_routes_supported", False) is not True:
             raise ValueError("Backend does not support input-route evidence")
 
-    def _observe(self):
-        snapshot = super()._observe()
+    def _observe(self, stage="observe"):
+        snapshot = super()._observe(stage)
         try:
             rows = sources(snapshot)
             for source, expected in self.memory.input_commitments.items():

@@ -413,9 +413,11 @@ Only report repaired when every acceptance requirement is verified.
                 return False
             if previous.get("pending"):
                 if any(current.get(key) != previous.get(key) for key in (
-                    "pending", "active_plan", "step_index", "reservations"
+                    "pending", "active_plan", "step_index", "reservations", "attempt"
                 )):
                     return False
+            if current.get("attempt_outcomes") != previous.get("attempt_outcomes"):
+                return False
             if any(current.get("failures", {}).get(key, 0) < count
                    for key, count in previous.get("failures", {}).items()):
                 return False

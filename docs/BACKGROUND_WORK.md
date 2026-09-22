@@ -75,10 +75,18 @@ required; unsupported or missing receipt evidence fails closed.
 
 ## Recovery and checkpoint compatibility
 
-`BackgroundMemory` adds named `background_schema: 1` and `background_job` fields
-to the existing schema-1 checkpoint. This avoids claiming compatibility with the
-separate unmerged schema-2 attempt-evidence work in #3. A schema-1 checkpoint can
-be read by the new controller without rewriting it merely by loading. A new
+`BackgroundMemory` adds named `background_schema: 2`, `background_job`, and
+`background_attempt` fields to the schema-2 checkpoint. Admission transfers the
+pending attempt identity to the background job; acknowledgement alone creates no
+verified outcome. Observed completion records that identity without changing any
+concurrent foreground attempt. Background latency remains unknown across this
+handoff.
+
+Legacy schema-1 checkpoints load without rewriting the source. An existing
+background extension at version 1 retains its job and explicitly unknown attempt
+identity until completion; no dispatch identity or timing is fabricated. New
+admissions use extension version 2. Offline diagnostics understand both background
+and input-route extensions and preserve their evidence in the report. A new
 background checkpoint is deliberately rejected by an older reader rather than
 silently losing work. Do not remove extension fields, downgrade the version, or
 restore an old checkpoint against a newer world for rollback.
