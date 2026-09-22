@@ -345,7 +345,12 @@ def test_capture_replacement_cancel_fullscreen_and_track_end(live):
     assert page.evaluate("window.testCapture.getVideoTracks()[0].readyState") == "live"
     page.locator("#camera-devices").select_option("test")
     page.locator("#fullscreen").click()
-    page.wait_for_function("document.fullscreenElement?.id === 'game-stage'")
+    # `wait_for_function` evaluates string predicates in the page context on
+    # current Playwright releases, which the dashboard's intentional strict CSP
+    # rejects. The click has completed the request; inspect the native
+    # fullscreen state through CDP instead of weakening the page policy.
+    page.wait_for_timeout(50)
+    assert page.evaluate("document.fullscreenElement?.id") == "game-stage"
     page.evaluate("document.exitFullscreen()")
     page.evaluate("window.testCapture.getVideoTracks()[0].dispatchEvent(new Event('ended'))")
     playwright.expect(page.locator("#capture-placeholder")).to_be_visible()
