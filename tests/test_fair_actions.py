@@ -102,6 +102,50 @@ def fair_runtime():
     return runtime
 
 
+@pytest.mark.parametrize("fails", [False, True])
+def test_inventory_inspection_removes_unsafe_gui_callback(fair_runtime, fails):
+    fair_runtime.globals().inspection_fails = fails
+    fair_runtime.execute("""
+        storage.actions = {inspect_inventory = function(value)
+            script.on_nth_tick(60, function() error("invalid disconnected character") end)
+            if inspection_fails then error("inventory unavailable") end
+            return value, nil, 7
+        end}
+        handlers.nth60 = function() error("stale callback") end
+    """)
+    source = files("jev_factorio").joinpath("lua/fair_actions.lua").read_text()
+    fair_runtime.execute(source)
+    fair_runtime.execute(source)
+    fair_runtime.execute("""
+        assert(handlers.nth60 == nil)
+        local result = table.pack(pcall(storage.actions.inspect_inventory, "contents"))
+        assert(handlers.nth60 == nil)
+        if inspection_fails then
+            assert(not result[1])
+            assert(string.find(result[2], "inventory unavailable"))
+        else
+            assert(result.n == 4 and result[1] and result[2] == "contents")
+            assert(result[3] == nil and result[4] == 7)
+        end
+    """)
+
+
+def test_generated_terrain_discovery_does_not_select_or_control_the_player(fair_runtime):
+    fair_runtime.execute("""
+        resource.position = {x = 512, y = 0}
+        selection_updates = 0
+        player.update_selected_entity = function()
+            selection_updates = selection_updates + 1
+            player.selected = resource
+        end
+        discovered = storage.fair.discover_mine_target("coal", {x = 0, y = 0}, 1024)
+        assert(discovered.name == "coal")
+        assert(discovered.position.x == 512 and discovered.position.y == 0)
+        assert(selection_updates == 0)
+        assert(storage.fair.job == nil)
+    """)
+
+
 def test_native_walk_controls_player_and_stops_at_destination(fair_runtime):
     fair_runtime.execute("""
         storage.fair.begin_move{x = 2, y = 0}

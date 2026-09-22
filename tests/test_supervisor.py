@@ -71,6 +71,45 @@ def test_resume_command_preserves_world_and_controller(supervisor):
     assert command[command.index("--policy") + 1] == "hybrid"
     assert command[command.index("--target") + 1] == "rocket_launch"
     assert "--run-dir" not in command
+    assert command[command.index("--factory-scheduling") + 1] == "serial"
+    assert "--background-work" not in command
+    assert "--furnace-output-buffers" not in command
+    assert "--furnace-input-belts" not in command
+
+
+def test_production_extensions_forwarded_on_every_launch(supervisor):
+    supervisor.config.factory_scheduling = "ready-work"
+    supervisor.config.background_work = True
+    supervisor.config.furnace_output_buffers = True
+    supervisor.config.furnace_input_belts = True
+    for _ in range(2):
+        command = supervisor.gameplay_command()
+        assert command[command.index("--factory-scheduling") + 1] == "ready-work"
+        for flag in ("--background-work", "--furnace-output-buffers", "--furnace-input-belts"):
+            assert flag in command
+        assert "--resume" in command and "--resume-controller" in command
+
+
+@pytest.mark.parametrize("extension", [
+    "background_work", "furnace_output_buffers", "furnace_input_belts",
+])
+def test_production_extensions_require_ready_work(supervisor, extension):
+    setattr(supervisor.config, extension, True)
+    with pytest.raises(ValueError, match="ready-work"):
+        supervisor.gameplay_command()
+
+
+def test_input_belts_require_output_buffers(supervisor):
+    supervisor.config.factory_scheduling = "ready-work"
+    supervisor.config.furnace_input_belts = True
+    with pytest.raises(ValueError, match="output buffers"):
+        supervisor.gameplay_command()
+
+
+def test_restart_cannot_silently_change_production_configuration(supervisor):
+    supervisor.config.factory_scheduling = "ready-work"
+    with pytest.raises(ValueError, match="configuration cannot be changed"):
+        supervisor.initialize()
 
 
 def test_research_evidence_is_exclusive_per_gameplay_invocation(supervisor, tmp_path):
