@@ -11,9 +11,11 @@ def fair_runtime():
         defines = {
             controllers = {character = 1},
             events = {on_tick = 1, on_script_path_request_finished = 2},
+            build_check_type = {manual = 1},
             direction = {north = 0, northeast = 2, east = 4, southeast = 6,
                          south = 8, southwest = 10, west = 12, northwest = 14}
         }
+        prototypes = {entity = {pipe = {}, ["offshore-pump"] = {}}}
         script = {
             get_event_handler = function(event) return handlers[event] end,
             on_event = function(event, callback) handlers[event] = callback end,
@@ -29,7 +31,10 @@ def fair_runtime():
             valid = true, unit_number = 9,
             prototype = {collision_box = {}, collision_mask = {}}
         }
-        resource = {valid = true, minable = true, position = {x = 2, y = 0}}
+        resource = {
+            valid = true, minable = true, name = "coal", surface = {index = 1},
+            position = {x = 2, y = 0}
+        }
         quantities = {coal = 0, pipe = 4}
         surface = {
             request_path = function(parameters)
@@ -37,7 +42,10 @@ def fair_runtime():
                 return 17
             end,
             find_entities_filtered = function() return {resource} end,
-            find_entity = function() return built_entity end
+            find_entity = function() return built_entity end,
+            can_place_entity = function(parameters)
+                return not site_filter or site_filter(parameters)
+            end
         }
         cursor = {count = 0}
         inventory = {
@@ -145,6 +153,91 @@ def test_native_mining_observes_yield_without_inserting_resources(fair_runtime):
     """)
 
 
+def test_next_mining_target_uses_actor_position_and_skips_depleted_entities(fair_runtime):
+    fair_runtime.execute("""
+        local depleted = {valid = true, minable = false, position = {x = 30, y = 0}}
+        local distant = {valid = true, minable = true, position = {x = 45, y = 0}}
+        local nearby = {
+            valid = true, minable = true, name = "tree-01", surface = {index = 1},
+            position = {x = 31, y = 0}
+        }
+        player.position = {x = 30, y = 0}
+        surface.find_entities_filtered = function(filter)
+            assert(filter.type == "tree")
+            assert(filter.position.x == 30 and filter.position.y == 0)
+            assert(filter.radius == 64)
+            return {depleted, distant, nearby}
+        end
+        player.update_selected_entity = function(position)
+            player.selected = position == nearby.position and nearby or distant
+        end
+        local target = storage.fair.next_mine_target("wood", 64)
+        assert(target.position.x == 31 and target.position.y == 0)
+        assert(target.unit_number == nil)
+        assert(target.name == "tree-01" and target.surface_index == 1)
+        assert(player.position.x == 30 and player.position.y == 0)
+        assert(not player.walking_state or not player.walking_state.walking)
+        assert(not player.mining_state or not player.mining_state.mining)
+        assert(quantities.coal == 0)
+    """)
+
+
+def test_next_mining_target_enforces_fair_actor_invariants(fair_runtime):
+    fair_runtime.execute("game.speed = 2")
+    with pytest.raises(Exception, match="normal game speed"):
+        fair_runtime.execute('storage.fair.next_mine_target("wood", 64)')
+    assert fair_runtime.eval("player.position.x") == 0
+    assert fair_runtime.eval("quantities.coal") == 0
+
+
+def test_raw_target_skips_ore_obscured_by_another_selection_box(fair_runtime):
+    fair_runtime.execute("""
+        local hidden = {
+            valid = true, minable = true, name = "iron-ore",
+            surface = {index = 1}, position = {x = 1, y = 0}
+        }
+        local visible = {
+            valid = true, minable = true, name = "iron-ore",
+            surface = {index = 1}, position = {x = 2, y = 0}
+        }
+        surface.find_entities_filtered = function(filter)
+            assert(filter.name == "iron-ore")
+            assert(filter.radius == 128)
+            return {hidden, visible}
+        end
+        player.update_selected_entity = function(position)
+            player.selected = position == visible.position and visible or nil
+        end
+        local result = storage.fair.next_mine_target("iron-ore", 128)
+        assert(result.position.x == 2 and result.name == "iron-ore")
+        assert(requested_path == nil and quantities.coal == 0)
+        assert(not player.walking_state or not player.walking_state.walking)
+        assert(not player.mining_state or not player.mining_state.mining)
+    """)
+
+
+def test_wood_target_skips_trunks_obscured_by_other_selection_boxes(fair_runtime):
+    fair_runtime.execute("""
+        local hidden = {
+            valid = true, minable = true, name = "dead-grey-trunk",
+            surface = {index = 1}, position = {x = 1, y = 0}
+        }
+        local visible = {
+            valid = true, minable = true, name = "tree-03",
+            surface = {index = 1}, position = {x = 2, y = 0}
+        }
+        surface.find_entities_filtered = function() return {hidden, visible} end
+        player.update_selected_entity = function() player.selected = visible end
+        local result = storage.fair.next_mine_target("wood", 64)
+        assert(result.position.x == 2 and result.name == "tree-03")
+        assert(requested_path == nil and quantities.coal == 0)
+        assert(not player.walking_state or not player.walking_state.walking)
+        assert(not player.mining_state or not player.mining_state.mining)
+        player.update_selected_entity = function() player.selected = nil end
+        assert(next(storage.fair.next_mine_target("wood", 64)) == nil)
+    """)
+
+
 def test_mining_rejects_remote_target_and_stops_if_reach_changes(fair_runtime):
     fair_runtime.execute("""
         reachable = false
@@ -203,6 +296,162 @@ def test_place_consumes_existing_stack_and_returns_cursor_remainder(fair_runtime
     """)
 
 
+def test_build_site_search_checks_direction_without_moving_or_granting_items(fair_runtime):
+    fair_runtime.execute("""
+        site_filter = function(parameters)
+            return parameters.name == "offshore-pump"
+                and parameters.position.x == 1.5 and parameters.position.y == 0
+                and parameters.direction == defines.direction.east
+        end
+        local before = quantities.pipe
+        local result = storage.fair.find_build_site("offshore-pump", {x = 0, y = 0}, 2)
+        assert(result.position.x == 1.5 and result.position.y == 0)
+        assert(result.direction == defines.direction.east)
+        assert(quantities.pipe == before)
+        assert(cursor.count == 0 and built_entity == nil)
+        assert(player.position.x == 0 and player.position.y == 0)
+    """)
+
+
+def test_place_entity_uses_selected_direction_and_preserves_exact_direction(monkeypatch):
+    import sys
+    import types
+    from dataclasses import dataclass
+    from types import SimpleNamespace
+
+    @dataclass
+    class Position:
+        x: float
+        y: float
+
+    Direction = SimpleNamespace(
+        UP=SimpleNamespace(value=0), RIGHT=SimpleNamespace(value=4),
+        LEFT=SimpleNamespace(value=12),
+    )
+    Prototype = SimpleNamespace(
+        OffshorePump=SimpleNamespace(value=("offshore-pump", object))
+    )
+    fle = types.ModuleType("fle")
+    fle_env = types.ModuleType("fle.env")
+    fle_env.Direction, fle_env.Position, fle_env.Prototype = Direction, Position, Prototype
+    monkeypatch.setitem(sys.modules, "fle", fle)
+    monkeypatch.setitem(sys.modules, "fle.env", fle_env)
+
+    from jev_factorio.backends.fair_actions import FairActions
+
+    fair = object.__new__(FairActions)
+    calls = []
+    approaches = []
+
+    def call(function, *arguments):
+        calls.append((function, arguments))
+        if function == "find_build_site":
+            return {"position": {"x": 1.5, "y": 0}, "direction": Direction.RIGHT.value}
+        return {"name": "offshore-pump", "position": arguments[1]}
+
+    monkeypatch.setattr(fair, "call", call)
+    monkeypatch.setattr(fair, "approach", lambda position, name: approaches.append((position, name)))
+
+    entity = fair.place_entity(
+        Prototype.OffshorePump, Position(x=0, y=0), Direction.UP, exact=False
+    )
+
+    assert calls[0] == ("find_build_site", ("offshore-pump", {"x": 0.0, "y": 0.0}, 8))
+    assert calls[1] == (
+        "place", ("offshore-pump", {"x": 1.5, "y": 0}, Direction.RIGHT.value)
+    )
+    assert approaches[0][0] == Position(x=1.5, y=0)
+    assert entity.position == Position(x=1.5, y=0)
+
+    calls.clear()
+    approaches.clear()
+    fair.place_entity(
+        Prototype.OffshorePump, Position(x=3, y=4), Direction.LEFT, exact=True
+    )
+    assert calls == [
+        ("place", ("offshore-pump", {"x": 3.0, "y": 4.0}, Direction.LEFT.value))
+    ]
+    assert approaches[0][0] == Position(x=3, y=4)
+
+
+@pytest.mark.parametrize("reachable", [True, False])
+def test_harvest_reacquires_live_target_after_a_partial_native_yield(monkeypatch, reachable):
+    import sys
+    import types
+    from dataclasses import dataclass
+
+    @dataclass
+    class Position:
+        x: float
+        y: float
+
+    fle = types.ModuleType("fle")
+    fle_env = types.ModuleType("fle.env")
+    fle_env.Position = Position
+    monkeypatch.setitem(sys.modules, "fle", fle)
+    monkeypatch.setitem(sys.modules, "fle.env", fle_env)
+
+    from jev_factorio.backends.fair_actions import FairActions
+
+    fair = object.__new__(FairActions)
+    calls = []
+    approaches = []
+    targets = iter(({"x": 3, "y": 4}, {"x": 5, "y": 6}))
+
+    def call(function, *arguments):
+        calls.append((function, arguments))
+        if function == "next_mine_target":
+            return {"position": next(targets)}
+        if function == "mine_approach":
+            return {"reachable": reachable, "position": arguments[0]}
+        if function == "begin_mine":
+            return {}
+        raise AssertionError(function)
+
+    monkeypatch.setattr(fair, "call", call)
+    monkeypatch.setattr(fair, "move_to",
+                        lambda position: approaches.append(position))
+    yields = iter(({"gained": 1}, {"gained": 1}))
+    monkeypatch.setattr(fair, "wait", lambda: next(yields))
+
+    assert fair.harvest("wood", Position(x=-999, y=-999), 2) == 2
+    assert calls == [
+        ("mine_approach", ({"x": -999.0, "y": -999.0}, "wood")),
+        ("begin_mine", ({"x": -999.0, "y": -999.0}, "wood", 2)),
+        ("next_mine_target", ("wood", 64)),
+        ("mine_approach", ({"x": 3, "y": 4}, "wood")),
+        ("begin_mine", ({"x": 3, "y": 4}, "wood", 1)),
+    ]
+    assert approaches == ([] if reachable else [
+        Position(x=-999.0, y=-999.0), Position(x=3, y=4),
+    ])
+
+
+def test_reachable_mining_target_does_not_request_movement(fair_runtime):
+    fair_runtime.execute("""
+        local result = storage.fair.mine_approach({x = 2, y = 0}, "wood")
+        assert(result.reachable == true and result.position == nil)
+        assert(requested_path == nil)
+        assert(player.position.x == 0 and player.position.y == 0)
+        assert(quantities.coal == 0)
+    """)
+
+
+def test_mining_approach_stays_on_near_side_of_tree(fair_runtime):
+    fair_runtime.execute("""
+        reachable = false
+        resource.position = {x = 10, y = 0}
+        player.surface.find_non_colliding_position = function(name, position)
+            assert(name == "character")
+            assert(position.x == 8.5 and position.y == 0)
+            return position
+        end
+        local result = storage.fair.mine_approach(resource.position, "wood")
+        assert(not result.reachable and result.position.x == 8.5)
+        assert(requested_path == nil and player.position.x == 0)
+    """)
+
+
 def test_failed_build_returns_all_cursor_items(fair_runtime):
     fair_runtime.execute("""
         buildable = false
@@ -228,8 +477,71 @@ def test_callback_reload_preserves_previous_handlers_without_recursion(fair_runt
     fair_runtime.execute("""
         handlers[1]{}
         handlers[2]{id = 500}
-        assert(ticks_forwarded == 1)
+        assert(ticks_forwarded == 0)
+        assert(storage.fair.previous_tick ~= nil)
         assert(paths_forwarded == 1)
+    """)
+
+
+@pytest.mark.parametrize("terminal", ["idle", "completed", "failed", "expired"])
+def test_inherited_tick_cannot_restart_cancelled_controls(fair_runtime, terminal):
+    source = files("jev_factorio").joinpath("lua/fair_actions.lua").read_text()
+    fair_runtime.execute("""
+        handlers[1] = function()
+            player.walking_state = {walking = true}
+            player.mining_state = {mining = true}
+        end
+    """)
+    fair_runtime.execute(source)
+    fair_runtime.execute("storage.fair.bind()")
+    if terminal != "idle":
+        fair_runtime.execute('storage.fair.begin_mine({x = 2, y = 0}, "coal", 2)')
+        if terminal == "expired":
+            fair_runtime.execute("game.tick = 181; handlers[1]{}")
+        elif terminal == "failed":
+            fair_runtime.execute('storage.fair.stop("cancelled")')
+        else:
+            fair_runtime.execute("storage.fair.stop()")
+    fair_runtime.execute("""
+        handlers[1]{}
+        assert(not player.walking_state.walking)
+        assert(not player.mining_state.mining)
+        assert(quantities.coal == 0)
+    """)
+
+
+def test_unsafe_inherited_tick_is_quarantined_during_native_mining(fair_runtime):
+    source = files("jev_factorio").joinpath("lua/fair_actions.lua").read_text()
+    fair_runtime.execute("""
+        handlers[1] = function() error("stale FLE tick must not control mining") end
+    """)
+    fair_runtime.execute(source)
+    fair_runtime.execute("""
+        storage.fair.bind()
+        storage.fair.begin_mine({x = 2, y = 0}, "coal", 2)
+        handlers[1]{}
+        assert(storage.fair.job.status == "mining")
+        assert(player.mining_state.mining)
+        assert(quantities.coal == 0)
+    """)
+
+
+def test_unsafe_inherited_tick_is_quarantined_during_native_walking(fair_runtime):
+    source = files("jev_factorio").joinpath("lua/fair_actions.lua").read_text()
+    fair_runtime.execute("""
+        handlers[1] = function() error("stale FLE tick must not control walking") end
+    """)
+    fair_runtime.execute(source)
+    fair_runtime.execute("""
+        storage.fair.bind()
+        storage.fair.begin_move{x = 2, y = 0}
+        handlers[2]{id = 17, path = {
+            {position = {x = 0, y = 0}}, {position = {x = 2, y = 0}}
+        }}
+        handlers[1]{}
+        assert(storage.fair.job.status == "walking")
+        assert(player.walking_state.walking)
+        assert(player.position.x == 0)
     """)
 
 
