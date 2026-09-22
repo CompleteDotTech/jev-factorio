@@ -18,6 +18,7 @@
   <div class="toolbar-actions"><button id="freeze" aria-pressed="false">Ⅱ Freeze display</button><button id="export">↓ Export view</button><button id="broadcast" aria-pressed="false">◱ Broadcast layout</button></div>
 </nav>
 <div id="notice" class="notice" role="status" hidden></div>
+<div id="evidence-ticker" class="evidence-ticker" hidden tabindex="0" aria-label="Evidence coverage: completed decisions only; in-flight timing and unseen candidates unavailable. Focus or hover to pause."><span>RECORDED EVIDENCE · Completed decisions only · In-flight model timing and unseen candidates unavailable · Workflow marks show recorded boundaries, not current activity.</span></div>
 <main class="workspace">
   <aside class="panel thinking">
     <div class="panel-heading"><span class="eyebrow">01 / DECISION INTELLIGENCE</span><span class="mini-dot"></span></div>
@@ -47,7 +48,8 @@
 
     <section class="panel candidates-panel">
       <div class="panel-heading"><div><span class="eyebrow">02 / BOUNDED PLAN SELECTION</span><h2>Candidate work orders.</h2></div><span class="tag" id="candidate-count">0 CANDIDATES</span></div>
-      <div class="table-scroll"><table><thead><tr><th scope="col">Candidate plan</th><th scope="col">Benefit / 2</th><th scope="col">Disruption / 2</th><th scope="col">Needs obs.</th><th scope="col">Choice p.</th><th scope="col">Conf. B / D</th><th scope="col">Utility</th><th scope="col">Decision</th></tr></thead><tbody id="candidates"><tr><td colspan="8" class="empty">Candidate evidence appears with the next model request.</td></tr></tbody></table></div>
+      <div class="table-scroll" id="candidate-table"><table><thead><tr><th scope="col">Candidate plan</th><th scope="col">Benefit / 2</th><th scope="col">Disruption / 2</th><th scope="col">Needs obs.</th><th scope="col">Choice p.</th><th scope="col">Conf. B / D</th><th scope="col">Utility</th><th scope="col">Decision</th></tr></thead><tbody id="candidates"><tr><td colspan="8" class="empty">Candidate evidence appears with the next model request.</td></tr></tbody></table></div>
+      <div id="recorded-actions" class="recorded-actions" hidden></div>
       <div class="selection-summary"><span class="selection-icon">↳</span><div><span class="eyebrow">COMMITTED PLAN</span><strong id="selected-plan">No plan committed</strong><small id="selection-source">A model response does not itself authorize an action.</small></div><button id="inspect-plan" class="text-button">Inspect plan ↗</button></div>
     </section>
   </section>

@@ -260,3 +260,13 @@ verify capture plumbing; they are not native Factorio or actual OBS device
 validation. `CHROMIUM_PATH` may select an already installed supported Chromium.
 `DASHBOARD_SCREENSHOT` optionally saves the browser test's labelled synthetic
 preview. No generated image assets are required by the application.
+## Recorded-evidence presentation
+
+Legacy feeds show recorded boundaries, not live workflow activity. Recent rows
+retain their captured action, game tick, and outcome without inventing wall-clock
+timestamps. When candidate definitions are unavailable, the lower panel shows
+recent recorded actions instead of an empty candidate table.
+
+The evidence-coverage ticker pauses on hover or keyboard focus and respects
+reduced-motion preferences. In the studio composition it uses the existing notice
+strip without moving the native video cutout; actionable notices take precedence.

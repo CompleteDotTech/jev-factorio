@@ -165,8 +165,8 @@ def test_reducer_rejects_bad_envelopes_gaps_duplicates_and_top_level_override(tm
 def test_legacy_read_only_projection_and_supervisor_identity(tmp_path):
     path = tmp_path / "legacy.jsonl"
     sup = tmp_path / "supervisor.json"
-    row = {"state": {"session_id": "one", "world_kind": "mock", "inventory": {"coal": 5}},
-           "action": "mine_coal", "verified": False, "password": "not exported"}
+    row = {"state": {"session_id": "one", "world_kind": "mock", "inventory": {"coal": 5}, "tick": 123},
+           "action": "mine_coal", "verified": False, "outcome": "pending", "password": "not exported"}
     write(path, row)
     sup.write_text(json.dumps({"session_id": "two", "phase": "repair", "cwd": "/secret/path", "cutoff": 42}))
     before = path.read_bytes(), sup.read_bytes()
@@ -175,6 +175,10 @@ def test_legacy_read_only_projection_and_supervisor_identity(tmp_path):
     snapshot = monitor.snapshot()
     assert snapshot["source"]["mode"] == "legacy"
     assert snapshot["view"].get("model_busy") is None
+    assert snapshot["events"][-1]["action"] == "mine_coal"
+    assert snapshot["events"][-1]["tick"] == 123
+    assert snapshot["events"][-1]["outcome"] == "pending"
+    assert snapshot["events"][-1]["verified"] is False
     assert not snapshot["supervisor"]["session_match"]
     assert "cwd" not in snapshot["supervisor"]["state"]
     assert "not exported" not in json.dumps(snapshot)

@@ -87,7 +87,7 @@ function renderGoals(v) {
     const done = Object.hasOwn(completed, goal);
     const active = !done && goal === v.goal;
     const node = el("div", `goal-node${done ? " done" : active ? " current" : ""}`);
-    node.append(el("strong", "", goal), el("small", "", done ? `Verified · tick ${text(completed[goal])}` : active ? "Active prerequisite" : "Not yet verified"));
+    node.append(el("strong", "", goal), el("small", "", done ? `Verified · tick ${text(completed[goal])}` : active ? goal === target ? "Active target" : "Active prerequisite" : "Not yet verified"));
     return node;
   });
   $("goals").replaceChildren(...nodes);
@@ -108,6 +108,17 @@ function renderCandidates(v) {
   let entries = Object.entries(candidates).filter(([, value]) => value && typeof value === "object");
   if (!entries.length && typeof plan.id === "string") entries = [[plan.id, plan]];
   const legacy = displayed?.source?.mode === "legacy";
+  $("candidate-table").hidden = legacy && !entries.length;
+  $("recorded-actions").hidden = !legacy || Boolean(entries.length);
+  if (legacy && !entries.length) {
+    const actions = array(displayed.events).filter((event) => event.action).slice(-5).reverse();
+    $("recorded-actions").replaceChildren(el("p", "evidence-caption", "Recorded actions · not a live execution phase"), ...actions.map((event) => {
+      const row = el("div", "recorded-action");
+      row.append(el("span", "mono", `tick ${text(event.tick)}`), el("strong", "", event.action),
+        el("span", "", text(event.outcome, event.verified === true ? "Postcondition verified" : "Effect not verified in this record")));
+      return row;
+    }));
+  }
   set("candidate-count", !entries.length && legacy ? "UNAVAILABLE IN LEGACY LOG" : `${entries.length} ${Object.keys(candidates).length ? "MODEL CANDIDATES" : "KNOWN PLANS"}`);
   const rows = entries.slice(0, 16).map(([id, candidate]) => {
     candidate = object(candidate);
@@ -152,8 +163,10 @@ function renderLog(data) {
     const kind = text(event.kind, "unknown");
     const row = el("div", `event-row${kind.endsWith("failed") ? " failed" : ""}`);
     const date = new Date(Number(event.time) * 1000);
-    const timestamp = data.source?.mode === "legacy" ? "captured row" : Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString([], {hour12: false});
-    row.append(el("span", "event-time", timestamp), el("span", "event-stage", `0${event.stage} / ${["", "SUP", "CONTROLLER", "GOALS", "PLANNER", "JEV", "NATIVE", "VERIFY", "REPAIR"][event.stage] || "UNKNOWN"}`), el("span", "event-kind", kind.replaceAll("_", " ") + (event.action ? ` · ${text(event.action)}` : "")), el("span", "event-duration", typeof event.duration_ms === "number" ? `${number(event.duration_ms, 1)} ms` : ""));
+    const legacy = data.source?.mode === "legacy";
+    const timestamp = legacy ? `tick ${text(event.tick)}` : event.time == null || Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString([], {hour12: false});
+    const outcome = text(event.outcome, event.verified === true ? "postcondition verified" : "effect not verified in this record");
+    row.append(el("span", "event-time", timestamp), el("span", "event-stage", legacy ? "RECORDED" : `0${event.stage} / ${["", "SUP", "CONTROLLER", "GOALS", "PLANNER", "JEV", "NATIVE", "VERIFY", "REPAIR"][event.stage] || "UNKNOWN"}`), el("span", "event-kind", legacy ? `${text(event.action, "Decision")} · ${outcome}` : kind.replaceAll("_", " ") + (event.action ? ` · ${text(event.action)}` : "")), el("span", "event-duration", typeof event.duration_ms === "number" ? `${number(event.duration_ms, 1)} ms` : ""));
     return row;
   });
   const scroll = $("event-log").scrollTop;
@@ -194,7 +207,7 @@ function render(data) {
   renderCandidates(v);
   STAGES.forEach((_, index) => {
     const node = $(`stage-${index + 1}`);
-    const active = index === 0 ? Boolean(sup.phase) : index === 7 ? sup.repair_required === true || sup.phase === "repair" : v.stage === index + 1 && v.lifecycle !== "returned" && v.lifecycle !== "error";
+    const active = index === 0 ? Boolean(sup.phase) : index === 7 ? sup.repair_required === true || sup.phase === "repair" : data.source?.mode !== "legacy" && v.stage === index + 1 && v.lifecycle !== "returned" && v.lifecycle !== "error";
     node.classList.toggle("active", active);
     node.classList.toggle("seen", array(v.seen).includes(index + 1));
   });
@@ -209,7 +222,7 @@ function render(data) {
   set("repair-detail", sup.phase ? `Reported supervisor phase: ${text(sup.phase)}. Repair required: ${text(sup.repair_required, "unknown")}. Attempt: ${text(sup.attempt)}. Lock ownership is not inferred.` : supervision.available ? "Supervisor session does not match this telemetry. Its repair state and cutoff are not applied." : "No matching supervisor state connected. No repair or process-control actions are available.");
   renderLog(data);
   const warnings = [];
-  if (data.source?.mode === "legacy") warnings.push("Legacy log: completed decisions only. In-flight model timing and unseen candidates are unavailable.");
+  $("evidence-ticker").hidden = data.source?.mode !== "legacy";
   if (data.source?.invalid) warnings.push(`${data.source.invalid} malformed or unsupported rows rejected.`);
   if (data.source?.partial) warnings.push("Waiting for a complete final JSONL line.");
   if (v.gap) warnings.push("Event history has a gap or was bounded; this is not a complete audit.");
@@ -230,7 +243,7 @@ function refreshStatus() {
   const heartbeatAge = (performance.now() - receivedAt) / 1000;
   const transportFresh = connected && heartbeatAge <= 3;
   const active = transportFresh && !stale && !ended;
-  for (let stage = 2; stage <= 7; stage++) $(`stage-${stage}`).classList.toggle("active", active && !frozen && v.stage === stage);
+  for (let stage = 2; stage <= 7; stage++) $(`stage-${stage}`).classList.toggle("active", active && !frozen && data.source?.mode !== "legacy" && v.stage === stage);
   $("connection-led").className = `led ${active ? "live" : "stale"}`;
   set("connection", !connected ? "Reconnecting" : !transportFresh ? "Feed delayed" : ended ? "Invocation ended" : stale ? "No recent telemetry" : "Feed connected");
   $("connection").title = receivedAt ? `Last transport snapshot ${Math.floor(heartbeatAge)}s ago. Game records update independently of this heartbeat.` : "No transport snapshot received.";

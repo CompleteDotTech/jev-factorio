@@ -57,6 +57,15 @@ requirements.
 
 ## Commands
 
+Supervised campaigns can opt into canonical capture with
+`python -m jev_factorio.supervisor ... --research-dir runs/campaign-evidence`.
+Each gameplay invocation receives a fresh exclusive `invocation-<uuid>` directory.
+World and controller resume flags remain unchanged. Existing gameplay logs are
+not converted, backfilled, or relabelled as canonical evidence. An invocation
+interrupted by the supervisor may retain an unsealed, incomplete prefix.
+Evaluate each directory with the commands below; continuation invocations are
+not independent trials. Missing experiment provenance remains an exclusion.
+
 Legacy behavior and the existing API remain available:
 
 ```sh
