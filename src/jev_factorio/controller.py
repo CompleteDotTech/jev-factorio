@@ -511,6 +511,20 @@ class HierarchicalLoop(AgentLoop):
         plan = Plan.from_dict(self.memory.active_plan)
         step = plan.steps[self.memory.step_index]
         pending = self.memory.pending
+        if self.memory.transfer_recovery is not None:
+            from .transfer_recovery import check_recovery
+            evidence = check_recovery(self.memory, snapshot)
+            if evidence is None:
+                self.memory.status = "uncertain"
+                self.memory.reason = "Transfer recovery evidence differs; pending action retained"
+                return self._record(snapshot, "observe", self.memory.reason)
+            reason = "Proved no durable transfer effect; reject this plan and replan without replay"
+            self.memory.event("rejected_transfer_reconciled", **evidence, tick=snapshot.tick)
+            self._finish_attempt(snapshot, "rejected_transfer_reconciled")
+            self.memory.transfer_recovery = None
+            self.memory.status = "running"
+            self._fail_plan(reason)
+            return self._record(snapshot, "reconcile", reason)
         with phase("verification", self._diagnostic_trace):
             verified = self._trace.verify(step, snapshot, plan_id=plan.id,
                                           index=self.memory.step_index, pending=pending,

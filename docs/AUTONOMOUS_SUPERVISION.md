@@ -103,6 +103,32 @@ distinguish source findings and mock tests from native observation evidence.
   The worktree must be clean before and after tests, with HEAD still equal to the
   verified merge commit.
 
+An optional `transfer_recovery` checkpoint reference supports one deliberately
+narrow historical incident: an ambiguous insertion of 50 iron ore into a stone
+furnace, with genuine observations showing five ore becoming four and exactly
+one completed smelt. `transfer_recovery.build_recovery(memory, run_dir)` reads a
+sealed canonical research run and returns a reference without changing state.
+It binds the complete checkpoint (except status, reason, observation tick, and
+the reference), complete log hashes, original Lua source, action identity, and
+pre/post observations. It requires unchanged actor inventory and receipts, the
+same bound actor and furnace, and no other dispatch, crafting, or input route.
+The resumed controller repeats these checks against the current native state.
+Conservation includes the ore already consumed by the in-progress smelt; an
+exhausted, idle furnace may therefore have finished six additional plates.
+It records `rejected_transfer_reconciled`, charges a plan failure, and returns
+a nonmutating step before replanning. It never retries the old command or writes
+a native receipt. A mismatch stays uncertain with the pending identity intact.
+This is conservation evidence of no durable effect, not proof of a particular
+error message. Unsupported transfers still require separate investigation.
+Generate the reference only under stopped, audited supervision: the complete
+checkpoint must match the immutable incident, its source revision must match
+the canonical action, and no later gameplay launch or live controller may
+exist. These are repair-handoff attestations, not facts inferred from a missing
+receipt. The normal FLE resume installs the checked `factory.lua` through
+`NativeFactory` before observing; historical source provenance is trusted from
+the matching supervisor execution record. Arbitrary or unaudited logs do not
+establish deployed-source provenance.
+
 Only running/completed checkpoints with the original session can pass repair
 validation. Code repair authorization permits focused commits, PRs, pushes,
 guarded merges, and origin/fork synchronization, never force pushes, bypassed
