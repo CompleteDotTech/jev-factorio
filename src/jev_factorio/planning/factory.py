@@ -5,6 +5,7 @@ use physical connections. Nothing here creates resources or unlocks research.
 """
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import asdict
 
@@ -36,18 +37,21 @@ class FactoryPlanner:
         return (*path, key)
 
     def _plan(self, action, effect, item="", threshold=0, *, parameters=None,
-              verification=None, costs=None, timeout=1800, description=""):
+              verification=None, costs=None, timeout=1800, description="", identity=None):
         parameters = parameters or {}
-        key = parameters.get("role", parameters.get("recipe", parameters.get("technology", item)))
+        key = identity or parameters.get(
+            "role", parameters.get("recipe", parameters.get("technology", item))
+        )
         step = Step(action, effect, item, threshold, costs, timeout,
                     parameters=parameters, verification=verification)
         return Plan(f"factory:{action}:{key}", self.goal,
                     description or f"{action}: {key}", (step,), materials=self.materials)
 
-    def _wait(self, effect, item="", threshold=0, role="", timeout=36000):
+    def _wait(self, effect, item="", threshold=0, role="", timeout=36000, identity=None):
         return self._plan("factory_wait", effect, item, threshold,
                           verification={"role": role} if role else {}, timeout=timeout,
-                          description=f"Observe native {effect} progress for {role or item}")
+                          description=f"Observe native {effect} progress for {role or item}",
+                          identity=identity)
 
     def _transfer(self, role, item, quantity, extracting=False):
         quantity = min(200, math.ceil(quantity))
@@ -70,6 +74,33 @@ class FactoryPlanner:
             return recipe, self._research(unlocks[0], path)
         return recipe, None
 
+    def _fair_resource_identity(self, item: str, target: int) -> str | None:
+        """Bind failures to a native resource site, including any replacement there."""
+        targets = self.factory.get("fair_resource_targets")
+        evidence = targets.get(item) if isinstance(targets, dict) else None
+        if not isinstance(evidence, dict):
+            return None
+        name, surface_index = evidence.get("name"), evidence.get("surface_index")
+        position = evidence.get("position")
+        if (not isinstance(name, str) or not name.strip()
+                or (item != "wood" and name != item)
+                or type(surface_index) is not int or surface_index <= 0
+                or not isinstance(position, dict)):
+            return None
+        coordinates = [position.get(axis) for axis in ("x", "y")]
+        if any(type(value) not in {int, float} or not math.isfinite(value)
+               for value in coordinates):
+            return None
+        site = {
+            "name": name, "surface_index": surface_index,
+            "position": {
+                axis: float(value) if value else 0.0
+                for axis, value in zip(("x", "y"), coordinates)
+            },
+        }
+        identity = json.dumps(site, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        return f"{item}:target:{target}:site:{identity}"
+
     def _need(self, item, amount, path=()):
         have = self.snapshot.inventory.get(item, 0)
         if have >= amount:
@@ -83,11 +114,21 @@ class FactoryPlanner:
         if item in RAW_ITEMS:
             if item not in self.snapshot.nearby_resources:
                 return self._explore(item)
-            quantity = min(50, missing)
+            # A wood observation proves only one currently mineable tree, not
+            # a whole forest. A tree can yield several wood and then disappear,
+            # unlike the stackable resource patches used for ore, coal, and
+            # stone. Keep wood to one fair native mine; the next observation
+            # chooses any later tree normally.
+            quantity = 1 if item == "wood" else min(50, missing)
+            target = have + quantity
+            identity = self._fair_resource_identity(item, target)
+            if identity is None:
+                return self._explore(item)
             return self._plan(
-                "factory_gather", "inventory", item, have + quantity,
+                "factory_gather", "inventory", item, target,
                 parameters={"resource": item, "quantity": quantity}, timeout=18000,
-                description=f"Gather {quantity} observed {item}; inventory target {have + quantity}",
+                description=f"Gather {quantity} observed {item}; inventory target {target}",
+                identity=identity,
             )
         recipe, prerequisite = self._recipe(item, path)
         if prerequisite:
@@ -331,8 +372,20 @@ class FactoryPlanner:
                 return prerequisite or self._transfer("utility:lab", item, max(1, needed))
         progress = self.factory.get("research_progress", 0)
         increment = min(0.01, 1 / max(1, tech["count"]))
+        # A wait which timed out while the lab lacked a pack must not veto a
+        # later wait after observed research progress or lab supplies changed.
+        # Retain the old failure record, but bind this passive observation to
+        # the exact progress/supply epoch rather than just the technology.
+        supplies = ",".join(
+            f"{ingredient['name']}={lab.get('input', {}).get(ingredient['name'], 0)}"
+            for ingredient in sorted(tech["ingredients"], key=lambda value: value["name"])
+        )
+        # repr(float) is the shortest round-trippable spelling, so distinct
+        # native progress values cannot collapse into the same failure budget.
+        identity = f"{name}:progress:{progress!r}:supplies:{supplies}"
         return self._wait("research_progress", name, min(1, progress + increment),
-                          timeout=max(3600, min(216000, tech["energy_ticks"] * 4)))
+                          timeout=max(3600, min(216000, tech["energy_ticks"] * 4)),
+                          identity=identity)
 
     def plan(self) -> Plan | None:
         if not self.factory:

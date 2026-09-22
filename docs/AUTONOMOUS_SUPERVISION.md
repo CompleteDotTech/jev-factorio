@@ -54,6 +54,24 @@ and pending actions. A JSON result file must say `status: "repaired"`, identify
 the exact `session_id` and absolute `checkpoint`, and provide a nonempty `evidence`
 array. An exit-zero repair process alone never authorizes a restart.
 
+Every repair prompt carries permanent fairness requirements: actual walking,
+normal mining, standard interaction reach, and 1x game speed. Repairs must not
+restore teleportation, fast movement/mining bypasses, remote interaction beyond
+standard reach, scripted harvest or inventory grants, elapsed-time-only simulated
+walking/mining, or game/player speed changes. Failures must be fixed in the fair
+execution path, with focused regression tests and independent exact-head source
+review of affected fairness behavior. A fairness regression or unresolved fairness
+concern requires a blocked result, not permission to resume.
+
+Future bug fixes belong in the repair loop: diagnosis, proposals, and unpublished
+patches do not complete a code repair. The repair agent must finish the fix, tests,
+independent review, publication/merge, and origin/fork synchronization before the
+supervisor resumes within the original cutoff, session, and pending identity.
+These fairness instructions are a repair-agent acceptance contract, not an
+independent runtime fairness detector. Prompt tests verify that the instructions
+remain present; they do not prove fair real-game behavior. Repair evidence must
+distinguish source findings and mock tests from native observation evidence.
+
 - `kind: "operational"` requires `operational_verified: true`, receipt/inventory/
   observation evidence, and unchanged tracked source and HEAD. Existing pending
   actions must remain byte-equivalent as JSON values for controller observation
@@ -61,6 +79,17 @@ array. An exit-zero repair process alone never authorizes a restart.
   pending: controller verification precedes further dispatch. Failure budgets
   must not be silently erased. This result is an agent attestation; it is not
   native game proof.
+
+  An ambiguous native placement may leave pending only after a resumed
+  observation establishes that the intended role is absent, the player force
+  has zero entities of the requested prototype, and all reserved materials
+  remain in inventory. The controller records a plan failure and returns a
+  non-mutating reconciliation step before it may plan another dispatch. Missing
+  or conflicting evidence stays uncertain; acknowledgement alone never permits
+  a replay. An ambiguous pipe or pole connection uses the same fail-closed rule:
+  both endpoint roles must remain, the player force must have zero entities of
+  the connector prototype, and all exactly reserved materials must remain. This
+  deliberately cannot reconcile once any same-prototype connector already exists.
 - `kind: "code"` requires all of `tests_passed`, `checks_passed`,
   `exact_head_reviewed`, `merged`, and `remotes_synced` true, a full `commit` SHA,
   and `pr_url`. The watchdog independently verifies local HEAD and origin/fork

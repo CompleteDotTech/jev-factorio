@@ -1,0 +1,42 @@
+flowchart TD
+
+subgraph GOAL_TREE["3. Goal dependencies and bootstrap skills"]
+    FUEL_GOAL["stockpile_fuel<br/>Verify carried coal at least 5"]
+    BOOT_GOAL["bootstrap_mining<br/>Verify working burner drill,<br/>connected output and at least 5 collected ore"]
+    ROCKET_GOAL["rocket_launch<br/>Verify native launch event/counter"]
+    IRON_GOAL["Optional target: iron_smelting<br/>10 carried and natively produced iron plates"]
+    STEAM_GOAL["Optional target: steam_power<br/>Powered lab on steam engine's network"]
+    SCIENCE_GOAL["Optional target: automation_science<br/>10 carried and natively produced science packs"]
+    BOOT_SELECT{"Bootstrap requirement?"}
+    BOOT_COAL["Offer coal-buffer plans<br/>Walk to observed coal if needed<br/>Mine in five-coal macros"]
+    BOOT_BUILD["Require one carried drill and chest<br/>Walk to observed iron<br/>Place drill and output chest"]
+    BOOT_FUEL["Gather coal if necessary<br/>Insert five carried coal into drill"]
+    BOOT_OUTPUT["Wait for measured ore output<br/>Extract ore if output chest blocks drill"]
+    BOOT_BLOCK["Block on missing materials,<br/>missing resource or unverified construction"]
+
+    FUEL_GOAL --> BOOT_GOAL
+    BOOT_GOAL --> ROCKET_GOAL
+    BOOT_GOAL -. alternative target .-> IRON_GOAL
+    BOOT_GOAL -. alternative target .-> STEAM_GOAL
+    BOOT_GOAL -. alternative target .-> SCIENCE_GOAL
+    GOALS -. uses dependency order .-> FUEL_GOAL
+    COMPILE -->|Fuel or bootstrap goal| BOOT_SELECT
+    BOOT_SELECT -->|Coal buffer missing| BOOT_COAL
+    BOOT_SELECT -->|Drill missing and materials available| BOOT_BUILD
+    BOOT_SELECT -->|Drill unfueled| BOOT_FUEL
+    BOOT_SELECT -->|Working drill or full output| BOOT_OUTPUT
+    BOOT_SELECT -->|Cannot safely proceed| BOOT_BLOCK
+    BOOT_COAL --> FILTER
+    BOOT_BUILD --> FILTER
+    BOOT_FUEL --> FILTER
+    BOOT_OUTPUT --> FILTER
+    BOOT_BLOCK --> BLOCKED
+end
+
+
+    BLOCKED["Mark blocked<br/>Record exact blocker"]
+    COMPILE["Compile bounded executable plans<br/>Factory planner or bootstrap skill compiler"]
+    FILTER["Exclude plans with failure count of 2 or more"]
+    GOALS["Verify goal predicates<br/>Refresh completed goals<br/>Select first incomplete prerequisite"]
+classDef continuation fill:#fff7ed,stroke:#c2410c,stroke-dasharray:5 4;
+class BLOCKED,COMPILE,FILTER,GOALS continuation;

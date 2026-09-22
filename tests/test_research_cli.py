@@ -15,7 +15,8 @@ from jev_factorio.backends.mock import MockBackend
 def offline(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     for key in ("TYPESAFE_API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID",
-                "JEV_RUN_DIR", "JEV_LOG_FILE", "JEV_TICK_SECONDS", "JEV_CONFIDENCE_FLOOR", "JEV_BACKEND"):
+                "JEV_RUN_DIR", "JEV_LOG_FILE", "JEV_DASHBOARD_EVENTS",
+                "JEV_TICK_SECONDS", "JEV_CONFIDENCE_FLOOR", "JEV_BACKEND"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(requests, "post", lambda *a, **kw: pytest.fail("Unexpected provider call"))
 
@@ -129,13 +130,14 @@ def test_logging_startup_failure_precedes_backend_initialization(tmp_path, monke
 
 
 @pytest.mark.parametrize("reserved", ["manifest.json", "events.jsonl", "integrity.json",
-                                      "events.jsonl/child", "."])
-@pytest.mark.parametrize("argument", ["--log-file", "--checkpoint"])
+                                      "events.jsonl/child", "MANIFEST.JSON", "EVENTS.JSONL",
+                                      "INTEGRITY.JSON", "EVENTS.JSONL/child", "."])
+@pytest.mark.parametrize("argument", ["--log-file", "--checkpoint", "--dashboard-events"])
 def test_artifact_aliases_rejected_before_backend(tmp_path, monkeypatch, reserved, argument):
     run = tmp_path / "run"
     monkeypatch.setattr(main, "make_backend", lambda *a, **kw: pytest.fail("Backend started"))
     arguments = ["--backend", "mock", "--steps", "0", "--run-dir", run, argument, run / reserved]
-    if argument == "--checkpoint":
+    if argument in {"--checkpoint", "--dashboard-events"}:
         arguments += ["--controller", "hierarchical", "--mock-model"]
     with pytest.raises(SystemExit) as error:
         invoke(monkeypatch, *arguments)
@@ -158,6 +160,80 @@ def test_invalid_cli_creates_no_research_artifacts(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         invoke(monkeypatch, "--run-dir", tmp_path / "run", "--steps", "-1")
     assert not (tmp_path / "run").exists()
+
+
+@pytest.mark.parametrize("invalid", [
+    ["--backend", "unknown"],
+    ["--resume-controller"],
+    ["--mock-model", "--policy", "deterministic"],
+    ["--background-work"],
+    ["--furnace-output-buffers"],
+    ["--furnace-input-belts"],
+])
+def test_invalid_cli_creates_no_dashboard_or_research(tmp_path, monkeypatch, invalid):
+    monkeypatch.setattr(main, "make_backend", lambda *a, **kw: pytest.fail("Backend started"))
+    with pytest.raises(SystemExit) as error:
+        invoke(monkeypatch, "--controller", "hierarchical", "--run-dir", tmp_path / "run",
+               "--dashboard-events", tmp_path / "dashboard.jsonl", *invalid)
+    assert error.value.code == 2
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_dashboard_can_live_in_research_directory(tmp_path, monkeypatch):
+    run = tmp_path / "run"
+    invoke(monkeypatch, "--controller", "hierarchical", "--mock-model", "--steps", "1",
+           "--run-dir", run, "--dashboard-events", run / "dashboard.jsonl")
+    assert (run / "dashboard.jsonl").is_file()
+    assert rl.verify_run(run)["complete"] is True
+
+
+def test_opt_in_modes_are_recorded_in_manifest(tmp_path, monkeypatch):
+    from jev_factorio.background import BackgroundWorkLoop
+
+    captured = {}
+
+    def initialize(self, backend, jev=None, **options):
+        captured.update(options)
+
+    monkeypatch.setattr(main, "make_backend", lambda *args, **kwargs: MockBackend())
+    monkeypatch.setattr(BackgroundWorkLoop, "__init__", initialize)
+    monkeypatch.setattr(BackgroundWorkLoop, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr("jev_factorio.buffer_controller.buffered_loop_type", lambda base: base)
+    monkeypatch.setattr("jev_factorio.input_controller.input_loop_type", lambda base: base)
+    invoke(monkeypatch, "--backend", "fle", "--controller", "hierarchical",
+           "--policy", "deterministic", "--checkpoint", tmp_path / "checkpoint.json",
+           "--tick-seconds", "1", "--steps", "0", "--run-dir", tmp_path / "run",
+           "--factory-scheduling", "ready-work", "--background-work",
+           "--furnace-output-buffers", "--furnace-input-belts")
+    configuration = json.loads((tmp_path / "run" / "manifest.json").read_text())["configuration"]
+    assert configuration["factory_scheduling"] == captured["factory_scheduling"] == "ready-work"
+    assert configuration["background_work"] is True
+    assert configuration["furnace_output_buffers"] is True
+    assert configuration["furnace_input_belts"] is True
+
+
+def test_backend_failure_closes_dashboard_and_research(tmp_path, monkeypatch):
+    from jev_factorio.dashboard import EventWriter
+
+    writers = []
+    original = EventWriter.__init__
+
+    def capture(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        writers.append(self)
+
+    def fail_backend(*args, **kwargs):
+        raise RuntimeError("backend unavailable")
+
+    monkeypatch.setattr(EventWriter, "__init__", capture)
+    monkeypatch.setattr(main, "make_backend", fail_backend)
+    with pytest.raises(RuntimeError):
+        invoke(monkeypatch, "--controller", "hierarchical", "--mock-model", "--steps", "1",
+               "--run-dir", tmp_path / "run", "--dashboard-events", tmp_path / "dashboard.jsonl")
+    assert rl.verify_run(tmp_path / "run")["outcome"] == "error"
+    import os
+    with pytest.raises((OSError, TypeError)):
+        os.fstat(writers[0].fd)
 
 
 def test_duration_configuration_without_waiting(tmp_path, monkeypatch):

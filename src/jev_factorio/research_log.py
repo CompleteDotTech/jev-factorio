@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Iterable, Mapping, Protocol
 
 EVENT_SCHEMA = "jev-factorio.event.v1"
 MANIFEST_SCHEMA = "jev-factorio.manifest.v1"
@@ -39,6 +39,33 @@ _PACKAGES = ("jev-factorio", "requests", "python-dotenv",
              "factorio-learning-environment", "a2a-sdk")
 _CREDENTIALS = ("TYPESAFE_API_KEY", "CLOUDFLARE_API_TOKEN", "FACTORIO_RCON_PASSWORD")
 _CORRELATION_KEYS = {"decision_id", "model_call_id", "plan_id", "action_id"}
+_TREATMENT_FIELDS = {"factory_scheduling", "background_work",
+                     "furnace_output_buffers", "furnace_input_belts"}
+
+
+class ResearchLogError(RuntimeError):
+    """A causal trace cannot be persisted."""
+
+
+class EventSink(Protocol):
+    def emit(self, event_type: str, payload: dict) -> object:
+        """Persist detached evidence before returning, or raise."""
+
+
+def validate_output_paths(sink: object, *paths: str | Path | None) -> None:
+    """Reject portable aliases between mutable output and research artifacts."""
+    run_dir = sink if isinstance(sink, (str, Path)) else getattr(sink, "run_dir", None)
+    if run_dir is None:
+        return
+    root = tuple(part.casefold() for part in Path(run_dir).resolve().parts)
+    reserved = {root + (name,) for name in ("manifest.json", "events.jsonl", "integrity.json")}
+    for path in paths:
+        if path is None:
+            continue
+        destination = tuple(part.casefold() for part in Path(path).resolve().parts)
+        if (root[:len(destination)] == destination
+                or any(destination[:len(artifact)] == artifact for artifact in reserved)):
+            raise ValueError("Output paths must not overwrite research artifacts or their directories")
 
 
 @dataclass(frozen=True)
@@ -60,6 +87,10 @@ class RunConfiguration:
     mock_model: bool = False
     legacy_log_enabled: bool = False
     checkpoint_enabled: bool = False
+    factory_scheduling: str = "serial"
+    background_work: bool = False
+    furnace_output_buffers: bool = False
+    furnace_input_belts: bool = False
 
 
 def canonical_bytes(value: object) -> bytes:
@@ -102,7 +133,10 @@ class Redactor:
 
     def text(self, value: str) -> str:
         for secret in self._secrets:
-            value = value.replace(secret, REDACTED)
+            if len(secret) >= 4:
+                value = value.replace(secret, REDACTED)
+            elif value == secret:
+                value = REDACTED
         value = re.sub(r"https?://[^\s<>\"']+", REDACTED, value, flags=re.I)
         value = re.sub(r"\b(?:Bearer|Basic)\s+[A-Za-z0-9+/_=.\-]+",
                        REDACTED, value, flags=re.I)
@@ -125,6 +159,26 @@ class Redactor:
         return value
 
 
+def safe_payload(value: object, secrets: Iterable[str] = ()) -> object:
+    """Detach causal data and label unsupported values without stringifying them."""
+    def normalize(item):
+        if item is None or type(item) in (str, bool, int):
+            return item
+        if type(item) is float:
+            return item if math.isfinite(item) else {"invalid_numeric": repr(item)}
+        if type(item) in (list, tuple):
+            return [normalize(child) for child in item]
+        if type(item) is dict:
+            if any(type(key) is not str for key in item):
+                raise ValueError("Causal evidence keys must be strings")
+            return {key: normalize(child) for key, child in item.items()}
+        return "[unsupported value]"
+
+    redactor = Redactor({f"SECRET_{index}": secret for index, secret in enumerate(secrets)
+                         if isinstance(secret, str) and secret})
+    return redactor.clean(normalize(value))
+
+
 def collect_provenance(repo_dir: Path, environ: Mapping[str, str]) -> dict:
     """Read bounded local metadata only; never collect remote URLs or source diffs."""
     def git(*args: str) -> str | None:
@@ -138,7 +192,16 @@ def collect_provenance(repo_dir: Path, environ: Mapping[str, str]) -> dict:
         except (OSError, subprocess.TimeoutExpired, UnicodeError):
             return None
 
-    commit = git("rev-parse", "HEAD")
+    root = git("rev-parse", "--show-toplevel")
+    tracked = False
+    if root:
+        try:
+            relative = Path(__file__).resolve().relative_to(Path(root).resolve())
+            tracked = git("ls-files", "--error-unmatch", "--",
+                          ":(top,literal)" + relative.as_posix()) is not None
+        except ValueError:
+            pass
+    commit = git("rev-parse", "HEAD") if tracked else None
     if commit is not None and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
         commit = None
     status = git("status", "--porcelain", "--untracked-files=normal") if commit else None
@@ -199,7 +262,15 @@ def _optional_text(value: object) -> None:
 
 
 def _configuration(configuration: dict) -> None:
-    _keys(configuration, set(RunConfiguration.__dataclass_fields__))
+    expected = set(RunConfiguration.__dataclass_fields__)
+    if (type(configuration) is not dict or not expected - _TREATMENT_FIELDS <= set(configuration)
+            or not set(configuration) <= expected):
+        raise ValueError("Unexpected evidence schema fields")
+    if configuration.get("factory_scheduling", "serial") not in ("serial", "ready-work"):
+        raise ValueError("Invalid factory scheduling policy")
+    for key in _TREATMENT_FIELDS - {"factory_scheduling"}:
+        if type(configuration.get(key, False)) is not bool:
+            raise ValueError("Invalid run treatment flag")
     for key in ("backend", "controller", "policy"):
         if type(configuration[key]) is not str or not configuration[key]:
             raise ValueError("Invalid run configuration label")
@@ -367,9 +438,10 @@ class ResearchLog:
         manifest = {
             "schema": MANIFEST_SCHEMA, "schema_version": 1, "run_id": self.run_id,
             "created_utc": self._timestamp(),
-            "configuration": self._redactor.clean(asdict(configuration)),
-            "provenance": self._redactor.clean(collect_provenance(
-                repo_dir or Path(__file__).resolve().parents[2], environment)),
+            "configuration": {key: value if key == "factory_scheduling" else self._redactor.clean(value)
+                              for key, value in asdict(configuration).items()},
+            "provenance": collect_provenance(
+                repo_dir or Path(__file__).resolve().parents[2], environment),
             "durability": "file-fsync-only" if os.name == "nt" else "file-and-directory-fsync",
         }
         validate_manifest(manifest)
@@ -399,12 +471,22 @@ class ResearchLog:
         """Persist one event; use only already-observed game facts as optional IDs."""
         if event_type in {"run_started", "run_finished"}:
             raise ValueError("Lifecycle events are owned by ResearchLog")
+        if type(payload) is dict:
+            if factorio_tick is None:
+                factorio_tick = payload.get("factorio_tick")
+            if session_id is None:
+                session_id = payload.get("session_id")
+            if correlation is None:
+                correlation = {key: payload[key] for key in _CORRELATION_KEYS
+                               if payload.get(key) is not None}
         return self._append(event_type, payload, factorio_tick=factorio_tick,
                             session_id=session_id, correlation=correlation)
 
     def _append(self, event_type: str, payload: dict, *, factorio_tick: int | None = None,
                 session_id: str | None = None, correlation: dict[str, str] | None = None) -> dict:
         with self._lock:
+            if correlation is not None and type(correlation) is not dict:
+                raise ValueError("Invalid correlation fields")
             if os.getpid() != self._owner_pid:
                 raise RuntimeError("Research writer cannot be shared across processes")
             if self._closed or self._failed or self._finished:
@@ -415,12 +497,17 @@ class ResearchLog:
                 raise ValueError("Monotonic research clock regressed")
             event = {
                 "schema": EVENT_SCHEMA, "schema_version": 1, "run_id": self.run_id,
-                "sequence": self._sequence + 1, "event_type": self._redactor.clean(event_type),
+                "sequence": self._sequence + 1, "event_type": event_type,
                 "time": {"utc": self._timestamp(), "monotonic_ns": monotonic,
                          "factorio_tick": factorio_tick},
                 "session_id": self._redactor.clean(session_id),
-                "correlation": self._redactor.clean({} if correlation is None else correlation),
-                "payload": self._redactor.clean(payload), "prev_hash": self._previous_hash,
+                "correlation": {key: self._redactor.clean(value)
+                                for key, value in (correlation or {}).items()},
+                "payload": (payload if event_type == "run_started" else
+                            {"outcome": payload["outcome"],
+                             "error_type": self._redactor.clean(payload["error_type"])}
+                            if event_type == "run_finished" else self._redactor.clean(payload)),
+                "prev_hash": self._previous_hash,
             }
             event["event_hash"] = digest(event)
             validate_event(event)

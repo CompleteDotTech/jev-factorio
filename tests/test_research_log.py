@@ -81,6 +81,14 @@ def test_v1_canonical_encoding_is_explicit():
     )
 
 
+def test_original_v1_configuration_without_treatment_fields_remains_valid(make_log):
+    writer = make_log()
+    manifest = json.loads((writer.run_dir / "manifest.json").read_bytes())
+    for key in rl._TREATMENT_FIELDS:
+        del manifest["configuration"][key]
+    rl.validate_manifest(manifest)
+
+
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"),
                                     {1: "numeric key"}, (1, 2), {1, 2}, object()])
 def test_non_json_values_never_become_evidence(make_log, value):
@@ -432,11 +440,12 @@ def test_size_limits_on_writer_and_verifier(make_log, monkeypatch):
         rl.verify_run(writer.run_dir, allow_incomplete=True)
 
 
-def test_provenance_allowlist_and_real_git_dirty_flag(tmp_path):
+def test_provenance_allowlist_and_real_git_dirty_flag(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     (repo / "file.txt").write_text("fixture")
+    monkeypatch.setattr(rl, "__file__", str(repo / "file.txt"))
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
                     "commit", "-qm", "fixture"], check=True)
@@ -450,6 +459,56 @@ def test_provenance_allowlist_and_real_git_dirty_flag(tmp_path):
     encoded = json.dumps(dirty)
     assert all(secret not in encoded for secret in ("should-not-appear", "/private/user", "untracked-secret-name"))
     assert set(dirty["runtime"]["packages"]) == set(rl._PACKAGES)
+
+
+def test_untracked_installed_copy_cannot_claim_enclosing_git_provenance(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "source.py").write_text("source")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test",
+                    "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"], check=True)
+    installed = repo / ".venv/lib/python/site-packages/jev_factorio/research_log.py"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("installed copy")
+    monkeypatch.setattr(rl, "__file__", str(installed))
+    assert rl.collect_provenance(installed.parent, {})["git"] == {"commit": None, "dirty": None}
+
+
+@pytest.mark.parametrize("secret", ["a", "0", "run", "run_started", "serial"])
+def test_secret_values_do_not_corrupt_structural_evidence(make_log, secret):
+    with make_log(environ={"PASSWORD": secret}) as writer:
+        writer.emit("observation", {"password": secret, "value": secret})
+    assert rl.verify_run(writer.run_dir)["complete"] is True
+    manifest = json.loads((writer.run_dir / "manifest.json").read_bytes())
+    rl.validate_manifest(manifest)
+    assert records(writer)[1]["payload"]["value"] == rl.REDACTED
+
+
+def test_causal_payload_exports_and_envelope_promotion(make_log):
+    original = {"session_id": "world", "factorio_tick": 120, "decision_id": "decision:1",
+                "action_id": None, "trace_id": "trace", "observation_id": "observation:1",
+                "answers": [{"confidence": float("nan"), "api_token": "private"}]}
+    captured = rl.safe_payload(original)
+    assert captured["answers"][0] == {"confidence": {"invalid_numeric": "nan"},
+                                      "api_token": rl.REDACTED}
+    assert original["answers"][0]["api_token"] == "private"
+    with make_log() as writer:
+        event = writer.emit("observation", captured)
+        assert event["time"]["factorio_tick"] == 120
+        assert event["session_id"] == "world"
+        assert event["correlation"] == {"decision_id": "decision:1"}
+        assert event["payload"]["observation_id"] == "observation:1"
+    assert rl.verify_run(writer.run_dir)["complete"] is True
+
+
+@pytest.mark.parametrize("name", ["EVENTS.JSONL", "Manifest.Json", "integrity.JSON/child", "."])
+def test_direct_sink_artifact_aliases_rejected(make_log, name):
+    writer = make_log()
+    with pytest.raises(ValueError, match="Output paths"):
+        rl.validate_output_paths(writer, writer.run_dir / name)
+    rl.validate_output_paths(writer, writer.run_dir / "decisions.jsonl", None)
 
 
 def test_missing_git_and_packages_stay_unknown(tmp_path, monkeypatch):

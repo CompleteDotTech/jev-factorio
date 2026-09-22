@@ -34,18 +34,20 @@ class NativeFactory:
         return self.command(f"storage.campaign.{function}({encoded})")
 
     def approach(self, position: Any) -> None:
+        self.backend._fair.approach(position)
+
+    def approach_role(self, role: str) -> None:
         from fle.env import Position
 
-        reachable = self.command(
-            "local position = storage.agent_characters[1].surface.find_non_colliding_position("
-            "'character', {x=" + str(position.x) + ",y=" + str(position.y) + "}, 8, 0.5); "
-            "assert(position, 'No reachable entity approach'); "
-            "rcon.print(helpers.table_to_json(position))"
-        )
-        self.backend._tools.move_to(Position(**json.loads(reachable)))
+        state = json.loads(self.command(
+            "local entity = storage.campaign.entities[" + json.dumps(role) + "]; "
+            "assert(entity and entity.valid); "
+            "rcon.print(helpers.table_to_json({name=entity.name, position=entity.position}))"
+        ))
+        self.backend._fair.approach(Position(**state["position"]), state["name"])
 
     def observe(self, snapshot: GameSnapshot) -> GameSnapshot:
-        from fle.env import Resource
+        from fle.env import Position, Resource
 
         raw = self.command("rcon.print(helpers.table_to_json(storage.campaign.observe()))")
         factory = json.loads(raw)
@@ -64,10 +66,36 @@ class NativeFactory:
         snapshot.victory = factory["rockets_launched"] > factory["rocket_baseline"]
         snapshot.victory_source = "native:base-game-rocket-launch" if snapshot.victory else None
         snapshot.tick = factory["tick"]
-        for name, resource in (
-            ("copper-ore", Resource.CopperOre), ("stone", Resource.Stone),
-            ("wood", Resource.Wood), ("water", Resource.Water), ("crude-oil", Resource.CrudeOil),
-        ):
+        factory.pop("fair_resource_targets", None)
+        for resource in ("wood", "coal", "iron-ore", "copper-ore", "stone"):
+            self.backend._resources.pop(resource, None)
+            snapshot.nearby_resources.pop(resource, None)
+            radius = 64 if resource == "wood" else 128
+            observed = self.backend._fair.call("next_mine_target", resource, radius)
+            candidate = observed.get("position") if isinstance(observed, dict) else None
+            name = observed.get("name") if isinstance(observed, dict) else None
+            surface_index = observed.get("surface_index") if isinstance(observed, dict) else None
+            if not isinstance(candidate, dict):
+                continue
+            horizontal, vertical = candidate.get("x"), candidate.get("y")
+            if (isinstance(horizontal, (int, float)) and not isinstance(horizontal, bool)
+                    and isinstance(vertical, (int, float)) and not isinstance(vertical, bool)
+                    and math.isfinite(horizontal) and math.isfinite(vertical)
+                    and isinstance(name, str) and name.strip()
+                    and (resource == "wood" or name == resource)
+                    and type(surface_index) is int and surface_index > 0):
+                location = Position(x=float(horizontal), y=float(vertical))
+                self.backend._resources[resource] = location
+                snapshot.nearby_resources[resource] = math.hypot(
+                    location.x - snapshot.player_position[0],
+                    location.y - snapshot.player_position[1],
+                )
+                factory.setdefault("fair_resource_targets", {})[resource] = {
+                    "name": name,
+                    "surface_index": surface_index,
+                    "position": {"x": location.x, "y": location.y},
+                }
+        for name, resource in (("water", Resource.Water), ("crude-oil", Resource.CrudeOil)):
             try:
                 location = self.backend._tools.nearest(resource)
                 self.backend._resources[name] = location
@@ -98,6 +126,51 @@ class NativeFactory:
         return self.backend._tools.get_entity(
             self.prototype(state["name"]), Position(**state["position"])
         )
+
+    @staticmethod
+    def fluid_connection_points(entity: Any, fluid: str, *, output: bool) -> list[Any]:
+        """Return FLE-observed pipe cells for one fluid without mutating the world."""
+        if output and fluid == "steam":
+            steam_output = getattr(entity, "steam_output_point", None)
+            if steam_output is not None:
+                return [steam_output]
+        attribute = "output_connection_points" if output else "input_connection_points"
+        typed = list(getattr(entity, attribute, []) or [])
+        if typed:
+            accepted = {fluid} if output else {"", fluid}
+            matches = [point for point in typed if getattr(point, "type", "") in accepted]
+            if matches:
+                return matches
+            direction = "output" if output else "input"
+            raise ValueError(f"Requested {direction} fluid has no native connection point")
+        generic = list(getattr(entity, "connection_points", []) or [])
+        if generic:
+            # FLE 0.4.3 serializes generator ports at the edge of the entity
+            # collision box.  On the axis of connection that is an integer tile
+            # boundary, not the half-integer center where a one-tile pipe can be
+            # built.  Move only those boundary coordinates one half-tile away
+            # from the generator; other handlers already report pipe-cell centers.
+            if getattr(entity, "name", "") in {"steam-engine", "steam-turbine"}:
+                center = entity.position
+                normalized = []
+                for point in generic:
+                    coordinates = []
+                    for coordinate, origin in (
+                        (float(point.x), float(center.x)),
+                        (float(point.y), float(center.y)),
+                    ):
+                        fraction = coordinate - math.floor(coordinate)
+                        if math.isclose(fraction, 0.5):
+                            coordinates.append(coordinate)
+                            continue
+                        if not math.isclose(fraction, 0.0) or math.isclose(coordinate, origin):
+                            raise ValueError("Generator connection point is not on a pipe-cell boundary")
+                        coordinates.append(coordinate + math.copysign(0.5, coordinate - origin))
+                    normalized.append(type(point)(x=coordinates[0], y=coordinates[1]))
+                generic = normalized
+            return generic
+        direction = "output" if output else "input"
+        raise ValueError(f"Requested {direction} fluid has no native connection point")
 
     def position(self, name: str, anchor: str) -> Any:
         from fle.env import Position
@@ -135,8 +208,7 @@ class NativeFactory:
         if action == "factory_gather":
             resource = parameters["resource"]
             position = self.backend._resources[resource]
-            tools.move_to(position)
-            harvested = tools.harvest_resource(position, quantity=parameters["quantity"])
+            harvested = self.backend._fair.harvest(resource, position, parameters["quantity"])
             return f"Harvested {harvested} {resource}"
         if action == "factory_craft":
             self.call("craft", parameters["recipe"], parameters["batches"])
@@ -145,17 +217,17 @@ class NativeFactory:
             from fle.env import Direction
 
             position = self.position(parameters["name"], parameters["anchor"])
-            self.approach(position)
-            entity = tools.place_entity(self.prototype(parameters["name"]),
+            entity = self.backend._fair.place_entity(self.prototype(parameters["name"]),
                                         position=position, direction=Direction.UP, exact=False)
             self.call("register", parameters["role"], parameters["name"],
                       {"x": entity.position.x, "y": entity.position.y})
             return f"Placed {parameters['name']} for {parameters['role']}"
         if action == "factory_configure":
+            self.approach_role(parameters["role"])
             self.call("configure", parameters["role"], parameters["recipe"])
             return f"Configured {parameters['role']}"
         if action in {"factory_insert", "factory_extract"}:
-            self.approach(self.entity(parameters["role"]).position)
+            self.approach_role(parameters["role"])
             self.call("transfer", parameters["role"], parameters["item"],
                       parameters["quantity"], parameters["receipt"], action == "factory_extract")
             return f"Transferred {parameters['quantity']} {parameters['item']} ({parameters['receipt']})"
@@ -167,20 +239,33 @@ class NativeFactory:
                 branch = json.loads(self.call("pipe_source", parameters["source"],
                                               parameters["target"], parameters["fluid"]))
                 if branch:
-                    source = tools.get_entity(self.prototype("pipe"), Position(**branch))
-                elif hasattr(source, "output_connection_points"):
-                    points = [
-                        point for point in source.output_connection_points if point.type == parameters["fluid"]
-                    ]
-                    if not points:
-                        raise ValueError("Requested output fluid has no native connection point")
-                    source = Position(x=points[0].x, y=points[0].y)
-            tools.connect_entities(source, target, connection_type=self.prototype(parameters["kind"]))
+                    source = Position(**branch)
+                    source_points = [source]
+                else:
+                    source_points = self.fluid_connection_points(
+                        source, parameters["fluid"], output=True
+                    )
+                target_points = self.fluid_connection_points(
+                    target, parameters["fluid"], output=False
+                )
+                source, target = min(
+                    ((left, right) for left in source_points for right in target_points),
+                    key=lambda pair: math.dist(
+                        (pair[0].x, pair[0].y), (pair[1].x, pair[1].y)
+                    ),
+                )
+                source = Position(x=source.x, y=source.y)
+                target = Position(x=target.x, y=target.y)
+            else:
+                source, target = source.position, target.position
+            self.backend._fair.connect(source, target, self.prototype(parameters["kind"]),
+                                       parameters["fluid"])
             return f"Constructed {parameters['kind']} connection; native topology must verify"
         if action == "factory_research":
             self.call("research", parameters["technology"])
             return f"Started native research {parameters['technology']}"
         if action == "factory_launch":
+            self.approach_role(parameters["role"])
             self.call("launch", parameters["role"])
             return "Requested native rocket launch; awaiting force launch counter"
         raise ValueError(f"Unsupported factory command: {action}")

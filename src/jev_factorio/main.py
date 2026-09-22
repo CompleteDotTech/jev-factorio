@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import argparse
 import os
-from contextlib import nullcontext
+from contextlib import ExitStack
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from .backends.mock import MockBackend
 from .loop import AgentLoop
-from .research_log import ResearchLog, RunConfiguration
+from .research_log import ResearchLog, RunConfiguration, validate_output_paths
 
 
 def make_backend(name: str, resume: bool = False, adopt_session: bool = False):
@@ -44,7 +44,17 @@ def cli() -> None:
     p.add_argument("--log-file", default=os.environ.get("JEV_LOG_FILE"))
     p.add_argument("--run-dir", default=os.environ.get("JEV_RUN_DIR"),
                    help="Create a new, exclusive research evidence directory (never append/resume)")
+    p.add_argument("--dashboard-events", default=os.environ.get("JEV_DASHBOARD_EVENTS"),
+                   help="Optional best-effort live dashboard JSONL; hierarchical controller only")
     p.add_argument("--controller", choices=("flat", "hierarchical"), default="flat")
+    p.add_argument("--factory-scheduling", choices=("serial", "ready-work"), default="serial",
+                   help="Opt-in bounded production choices; does not enable concurrent mutations or belts")
+    p.add_argument("--furnace-output-buffers", action="store_true",
+                   help="Opt-in paid burner-inserter output buffers; requires ready-work FLE")
+    p.add_argument("--furnace-input-belts", action="store_true",
+                   help="Opt-in owned drill/belt input routes; requires furnace output buffers")
+    p.add_argument("--background-work", action="store_true",
+                   help="Opt-in receipt-tracked crafting and research prefetch; requires ready-work FLE")
     p.add_argument("--target", choices=("bootstrap_mining", "iron_smelting", "steam_power",
                                        "automation_science", "rocket_launch"), default="rocket_launch")
     p.add_argument("--policy", choices=("jev", "deterministic", "hybrid"), default="jev")
@@ -72,6 +82,24 @@ def cli() -> None:
         p.error("--steps must be nonnegative")
     if not 0 <= args.confidence_floor <= 1:
         p.error("--confidence-floor must be finite and in [0, 1]")
+    if args.backend not in {"mock", "play_api", "fle"}:
+        p.error(f"unknown backend: {args.backend}")
+    if args.dashboard_events and args.controller != "hierarchical":
+        p.error("--dashboard-events requires --controller hierarchical")
+    if args.factory_scheduling != "serial" and args.controller != "hierarchical":
+        p.error("--factory-scheduling requires --controller hierarchical")
+    if args.background_work and (
+        args.controller != "hierarchical" or args.factory_scheduling != "ready-work"
+        or args.backend != "fle" or args.target == "bootstrap_mining"
+    ):
+        p.error("--background-work requires hierarchical FLE ready-work and a native production target")
+    if args.furnace_input_belts and not args.furnace_output_buffers:
+        p.error("--furnace-input-belts requires --furnace-output-buffers")
+    if args.furnace_output_buffers and (
+        args.controller != "hierarchical" or args.factory_scheduling != "ready-work"
+        or args.backend != "fle" or args.target == "bootstrap_mining"
+    ):
+        p.error("--furnace-output-buffers requires hierarchical FLE ready-work and a native production target")
     options = dict(confidence_floor=args.confidence_floor,
                    tick_seconds=args.tick_seconds, log_file=args.log_file)
     if args.controller == "flat":
@@ -102,16 +130,23 @@ def cli() -> None:
         except ValueError as error:
             p.error(str(error))
 
-    research_context = nullcontext(None)
+    if args.dashboard_events:
+        dashboard_path = Path(args.dashboard_events)
+        if dashboard_path.is_symlink():
+            p.error("Dashboard output must not be a symlink")
+        for other in (args.checkpoint, args.log_file):
+            if other and (
+                str(dashboard_path.resolve()).casefold() == str(Path(other).resolve()).casefold()
+                or (dashboard_path.exists() and Path(other).exists() and dashboard_path.samefile(other))
+            ):
+                p.error("Dashboard output must be separate from logs and checkpoints")
+    run_dir = None
     if args.run_dir:
         run_dir = Path(args.run_dir).resolve()
-        reserved = {run_dir / name for name in ("manifest.json", "events.jsonl", "integrity.json")}
-        for name in (args.log_file, args.checkpoint):
-            if name:
-                destination = Path(name).resolve()
-                if (destination in reserved or any(path in destination.parents for path in reserved)
-                        or destination == run_dir or destination in run_dir.parents):
-                    p.error("Log/checkpoint paths must not overwrite research artifacts or their directories")
+        try:
+            validate_output_paths(run_dir, args.log_file, args.checkpoint, args.dashboard_events)
+        except ValueError as error:
+            p.error(str(error))
         configuration = RunConfiguration(
             backend=args.backend, controller=args.controller, policy=args.policy,
             target=args.target if args.controller == "hierarchical" else None,
@@ -122,22 +157,49 @@ def cli() -> None:
             resume=args.resume, resume_controller=args.resume_controller,
             adopt_session=args.adopt_session, mock_model=args.mock_model,
             legacy_log_enabled=bool(args.log_file), checkpoint_enabled=bool(args.checkpoint),
+            factory_scheduling=args.factory_scheduling, background_work=args.background_work,
+            furnace_output_buffers=args.furnace_output_buffers,
+            furnace_input_belts=args.furnace_input_belts,
         )
-        try:
-            research_context = ResearchLog(run_dir, configuration)
-        except (OSError, ValueError) as error:
-            p.error(f"Cannot initialize research evidence ({type(error).__name__}); backend not started")
-
-    # Initialize evidence before a backend can initialize/reset a dedicated world.
-    # This records lifecycle only: no extra observe(), model call, or step wrapper.
-    with research_context as research:
+    with ExitStack() as cleanup:
+        research = None
+        if run_dir is not None:
+            try:
+                research = cleanup.enter_context(ResearchLog(run_dir, configuration))
+            except (OSError, ValueError) as error:
+                p.error(f"Cannot initialize research evidence ({type(error).__name__}); backend not started")
+        writer = None
+        if args.dashboard_events:
+            from .dashboard import EventWriter
+            try:
+                writer = cleanup.enter_context(EventWriter(
+                    args.dashboard_events, forbidden=(args.checkpoint, args.log_file)))
+            except (OSError, ValueError) as error:
+                p.error(str(error))
         if args.controller == "flat":
             loop = AgentLoop(make_backend(args.backend, resume=args.resume), **options)
         else:
-            loop = HierarchicalLoop(make_backend(args.backend, resume=args.resume,
+            loop_type = HierarchicalLoop
+            if args.background_work:
+                from .background import BackgroundWorkLoop
+
+                loop_type = BackgroundWorkLoop
+            if args.furnace_output_buffers:
+                from .buffer_controller import buffered_loop_type
+
+                loop_type = buffered_loop_type(loop_type)
+            if args.furnace_input_belts:
+                from .input_controller import input_loop_type
+
+                loop_type = input_loop_type(loop_type)
+            loop = loop_type(make_backend(args.backend, resume=args.resume,
                                                  adopt_session=args.adopt_session), jev=client,
                                     target=args.target, policy=args.policy, checkpoint=args.checkpoint,
-                                    resume_controller=args.resume_controller, **options)
+                                    resume_controller=args.resume_controller,
+                                    factory_scheduling=args.factory_scheduling, **options)
+        if writer is not None:
+            from .dashboard import attach
+            attach(loop, writer)
         if research is not None:
             memory = getattr(loop, "memory", None)
             research.emit("controller_initialized", {

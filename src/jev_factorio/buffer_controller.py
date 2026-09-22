@@ -1,0 +1,121 @@
+"""Compose output buffers with either foreground or acknowledged-background control."""
+from __future__ import annotations
+
+from copy import deepcopy
+
+from .output_buffers import permits, sources
+from .planning.output_buffers import OutputBufferPlanner
+from .skills import Plan, Step
+
+
+class OutputBufferMixin:
+    planner_type = OutputBufferPlanner
+
+    def __init__(self, backend, jev=None, **options) -> None:
+        if options.get("factory_scheduling") != "ready-work":
+            raise ValueError("Output buffers require ready-work scheduling")
+        self._buffer_fault = False
+        self._buffer_save_poisoned = False
+        self._buffer_evidence = {}
+        super().__init__(backend, jev, **options)
+        if self.catalog is None:
+            raise ValueError("Output buffers require a native production catalog")
+        native = getattr(backend, "_factory", None)
+        if native is not None:
+            from .backends import has_adapter
+            from .backends.output_buffers import OutputBufferFactory
+
+            if not has_adapter(native, OutputBufferFactory):
+                backend._factory = OutputBufferFactory(native)
+        elif getattr(backend, "output_buffers_supported", False) is not True:
+            raise ValueError("Backend does not support output-buffer evidence")
+
+    def _save(self) -> None:
+        if self._buffer_save_poisoned:
+            raise RuntimeError("Buffer checkpoint persistence failed; reconstruct before continuing")
+        try:
+            super()._save()
+        except BaseException:
+            self._buffer_save_poisoned = True
+            raise
+
+    def _observe(self):
+        if self._buffer_save_poisoned:
+            raise RuntimeError("Buffer checkpoint persistence failed; reconstruct before continuing")
+        snapshot = super()._observe()
+        try:
+            rows = sources(snapshot)
+            if any(row.get("state") == "fault" for row in rows.values()):
+                raise ValueError("Output-buffer identity, topology, or conservation requires reconciliation")
+        except (ValueError, AttributeError):
+            self._buffer_fault = True
+            self.memory.status = "uncertain"
+            self.memory.reason = "Output-buffer evidence invalid; preserve pending work for reconciliation"
+            self._save()
+        self._buffer_evidence = deepcopy(snapshot.factory.get("output_buffers", {}))
+        return snapshot
+
+    def _execution_barrier(self, snapshot) -> bool:
+        return self._buffer_fault or self._buffer_save_poisoned or super()._execution_barrier(snapshot)
+
+    def _step_allowed(self, step, snapshot) -> bool:
+        return (not self._execution_barrier(snapshot)
+                and permits(step.action, step.parameters or {}, snapshot)
+                and super()._step_allowed(step, snapshot))
+
+    def _verify_pending(self, snapshot):
+        if self._execution_barrier(snapshot):
+            return self._record(snapshot, "observe", self.memory.reason)
+        return super()._verify_pending(snapshot)
+
+    def _record_extras(self) -> dict:
+        return {**super()._record_extras(), "furnace_output_buffers": True,
+                "buffer_evidence": deepcopy(self._buffer_evidence)}
+
+    def _compile_candidates(self, snapshot):
+        original, blocker = super()._compile_candidates(snapshot)
+        if self.memory.active_goal == "bootstrap_mining":
+            return original, blocker
+        job = getattr(self, "_job", lambda: None)()
+        boiler = snapshot.factory.get("entities", {}).get("utility:boiler", {})
+        if boiler and boiler.get("fuel", {}).get("coal", 0) < 5:
+            return [plan for plan in original if self._step_allowed(plan.steps[0], snapshot)], blocker
+        planner = self.planner_type(self.catalog, snapshot, self.memory.active_goal)
+        # Burner maintenance is small and independent; background output locks
+        # still control whether this particular coal action can be dispatched.
+        for row in sources(snapshot).values():
+            part = row.get("parts", {}).get("inserter", {})
+            entity = snapshot.factory["entities"].get(part.get("role", ""), {})
+            fuel = entity.get("fuel", {}).get("coal", 0)
+            if entity and fuel < 2:
+                plan = (planner._prerequisite("coal", 5 - fuel, ())
+                        or planner._transfer(part["role"], "coal", 5 - fuel))
+                if self._step_allowed(plan.steps[0], snapshot):
+                    return [plan], ""
+        if job is not None or snapshot.factory.get("crafting_queue", 0):
+            # Never build or spend job outputs during an acknowledged craft.
+            selected = [plan for plan in original if self._step_allowed(plan.steps[0], snapshot)]
+            if selected:
+                return selected, blocker
+            return [Plan("buffer:crafting-wait", self.memory.active_goal,
+                         "No independent buffer-safe work; observe native crafting",
+                         (Step("factory_wait", "crafting_idle", timeout_ticks=1800),))], ""
+        try:
+            plans = planner.candidates()
+        except (KeyError, ValueError):
+            plans = original
+        # Preserve #29's research prefetch whenever normal progression is waiting
+        # for research, rather than replacing it with another serial wait.
+        if (plans and all(plan.steps[0].action == "factory_wait"
+                          and plan.steps[0].effect == "research_progress" for plan in plans)):
+            plans = original
+        selected = [plan for plan in plans if self._step_allowed(plan.steps[0], snapshot)]
+        tracked = getattr(self, "_tracked_plan", None)
+        if tracked:
+            selected = [tracked(plan, snapshot) for plan in selected]
+        return selected, "" if selected else blocker or "No buffer-safe production action"
+
+
+def buffered_loop_type(base):
+    """Compose with an explicitly selected controller, without changing defaults."""
+    return type("OutputBufferLoop", (OutputBufferMixin, base), {"__module__": __name__})

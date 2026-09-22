@@ -87,7 +87,10 @@ load that save on restart. Never mark a personal gameplay world.
 ```
 
 This bootstrap gathers coal, places an iron drill and output chest, and fuels
-production. FLE uses accelerated movement rather than keyboard/mouse controls.
+production. Player actions use native walking and mining states at 1× speed.
+Buildings consume existing cursor items through ordinary build checks; transfers
+require native interaction reach. FLE's teleporting movement, scripted harvesting,
+and connection-building shortcuts are not used.
 Decision logs distinguish Jev choices from confidence-gated scripted fallbacks.
 FLE's executable Lua state stays in a session-only table, not Factorio's saved
 `storage`, so saving does not try to serialize functions. Saved factories persist,

@@ -53,6 +53,13 @@ provenance collection add overhead; no native timing equivalence is claimed.
 already obtained by the controller. `factorio_tick` and `session_id` may be null;
 correlation may contain nonempty string `decision_id`, `model_call_id`, `plan_id`
 and `action_id`. Unknown facts must not be filled with synthetic values.
+The two-positional-argument `EventSink.emit(event_type, payload)` protocol also
+supports causal instrumentation: payload `session_id`, `factorio_tick`, and the
+four correlation IDs populate the envelope when corresponding explicit keyword
+arguments are absent or null. These facts remain in the payload; `trace_id`,
+`observation_id` and `world_kind` remain payload-only. `safe_payload` detaches
+causal data, labels nonfinite numbers and opaque values, and redacts credentials;
+the canonical writer itself continues to reject non-JSON input.
 
 ## V1 envelope and serialization
 
@@ -87,7 +94,12 @@ The stored line is canonical bytes plus one LF. Each document/event is at most
 1 MiB including its LF; the verifier streams events with bounded line reads.
 
 The manifest uses schema `jev-factorio.manifest.v1`. Its hash is the first event's
-`prev_hash`. Each event hashes its entire envelope **except `event_hash`**;
+`prev_hash`. New manifests also record treatment settings `factory_scheduling`,
+`background_work`, `furnace_output_buffers` and `furnace_input_belts` in
+configuration. For original V1 manifests these four fields may be absent
+(historical defaults: serial scheduling and disabled opt-ins); all other
+configuration fields remain required and unknown fields are rejected.
+Each event hashes its entire envelope **except `event_hash`**;
 `prev_hash` points to the previous event hash. The start payload also names the
 manifest hash. Redaction happens **before** hashing and writing. The final seal
 uses `jev-factorio.integrity.v1` and binds run ID, manifest hash, event count and
@@ -134,7 +146,10 @@ authenticity, independent execution, or experimental reproducibility.
 
 The manifest records explicit non-path CLI settings, Git commit/dirty status
 when locally available, Python/system/architecture, and versions of a small
-allowlist of relevant distributions. Missing facts remain null. Git probes are
+allowlist of relevant distributions. Missing facts remain null. Git provenance is
+recorded only when the executing logging module is tracked inside that
+worktree; copied site-packages installations inside another checkout stay unknown.
+Package versions still identify the installed distributions. Git probes are
 local, read-only, timed, and never contact remotes. Capture precedes run-directory
 creation to avoid the logger itself changing the dirty flag. A dirty flag is not
 a source snapshot or a reproducibility guarantee; code patch capture is deferred.
@@ -148,6 +163,10 @@ setting and mock flag without making another provider call.
 
 Payload redaction is defense in depth: sensitive keys, known secret environment
 values, authorization strings and HTTP(S) URLs are removed before serialization.
+Secrets shorter than four characters are matched only as whole string values,
+because arbitrary substring replacement would destroy ordinary evidence.
+Allowlisted provenance, schema keys, event types, lifecycle outcomes and hashes
+are structural facts and are not subjected to environment substring replacement.
 It does not mutate caller data. Arbitrary secrets without a recognizable key,
 encoded secrets, and private natural-language/game/repository content cannot be
 guaranteed detectable. Instrumenters must avoid raw dumps and pass explicit safe
