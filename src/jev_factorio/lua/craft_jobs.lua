@@ -2,6 +2,22 @@
 local campaign = assert(storage.campaign)
 campaign.craft_jobs = campaign.craft_jobs or {}
 local jobs = campaign.craft_jobs
+local buffers, routes = storage.output_buffers, storage.input_routes
+local observer = campaign.observe
+if routes and observer == routes.observer then observer = routes.previous_observe end
+if buffers and observer == buffers.observer then observer = buffers.previous_observe end
+if jobs.observe_wrapper and observer == jobs.observe_wrapper
+    and campaign.observe ~= jobs.observe_wrapper then
+    for _, entry in ipairs({
+        {defines.events.on_pre_player_crafted_item, jobs.pre_handler},
+        {defines.events.on_player_cancelled_crafting, jobs.cancel_handler},
+        {defines.events.on_player_crafted_item, jobs.crafted_handler}
+    }) do
+        assert(entry[2] and script.get_event_handler(entry[1]) == entry[2],
+            "Craft event handler changed")
+    end
+    return
+end
 
 local function actor()
     local player = storage.fair.actor()

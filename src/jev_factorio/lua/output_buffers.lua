@@ -4,6 +4,13 @@ assert(campaign and fair, "Output buffers require native factory and fair contro
 local b = storage.output_buffers or {cells = {}, offers = {}, protocol = 1}
 assert(b.protocol == 1, "Unsupported output-buffer runtime")
 storage.output_buffers = b
+local routes = storage.input_routes
+if routes and campaign.observe == routes.observer and campaign.transfer == routes.transfer
+    and routes.previous_observe == b.observer and routes.previous_transfer == b.transfer then
+    assert(script.get_event_handler(defines.events.on_tick) == b.tick_handler,
+        "Unexpected tick handler; refusing to replace it")
+    return
+end
 local supported = {"iron-plate", "copper-plate", "steel-plate"}
 local names = {chest = "wooden-chest", inserter = "burner-inserter"}
 local function point(p) return {x = p.x or p[1], y = p.y or p[2]} end

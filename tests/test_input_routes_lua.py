@@ -59,8 +59,90 @@ def test_reattachment_preserves_single_observer_and_receipts(tmp_path):
     execute('local cell=build_all(); local before=placements\n' + adapter + '\npulse();pulse();pulse();assert(cell.flow and placements==before)', tmp_path)
 
 
+@pytest.mark.parametrize("background", [False, True])
+def test_composed_output_input_reattachment_preserves_bounded_chain(background):
+    runtime = pytest.importorskip("lupa").LuaRuntime()
+    runtime.execute((ROOT / "tests/fixtures/output_buffers_runtime.lua").read_text())
+    runtime.execute("base_observe=campaign.observe; base_transfer=campaign.transfer")
+    craft = (ROOT / "src/jev_factorio/lua/craft_jobs.lua").read_text()
+    if background:
+        runtime.execute("""
+            defines.events.on_pre_player_crafted_item=2
+            defines.events.on_player_cancelled_crafting=3
+            defines.events.on_player_crafted_item=4
+            player.index=1; player.character={unit_number=9}
+            force.index=1; surface.index=1
+            player.get_main_inventory=function()
+                return {get_contents=function() return {} end}
+            end
+        """)
+        runtime.execute(craft)
+    runtime.execute("buffer_base_observe=campaign.observe")
+    output = (ROOT / "src/jev_factorio/lua/output_buffers.lua").read_text()
+    runtime.execute(output)
+    runtime.execute("install_parts(); commission()")
+    runtime.execute(ADAPTER.read_text())
+    for _ in range(25):
+        if background:
+            runtime.execute(craft)
+        runtime.execute(output)
+        runtime.execute(ADAPTER.read_text())
+        runtime.execute("""
+            assert(storage.output_buffers.previous_observe==buffer_base_observe)
+            assert(storage.output_buffers.previous_transfer==base_transfer)
+            assert(storage.input_routes.previous_observe==storage.output_buffers.observer)
+            assert(storage.input_routes.previous_transfer==storage.output_buffers.transfer)
+            assert(campaign.observe().output_buffers.sources["recipe:iron-plate"].flow.received==3)
+            assert(not pcall(campaign.transfer,cell.chest_role,"iron-plate",1,"seed",false))
+            assert(build_calls==2)
+        """)
+        if background:
+            runtime.execute("assert(campaign.craft_jobs.previous_observe==base_observe)")
+    if background:
+        runtime.execute("handlers[3]=function() end")
+        with pytest.raises(Exception, match="Craft event handler changed"):
+            runtime.execute(craft)
+    runtime.execute("handlers[1]=function() end")
+    with pytest.raises(Exception, match="Unexpected tick handler"):
+        runtime.execute(output)
+
+
 def test_new_output_requires_more_than_preloaded_furnace_material(tmp_path):
     execute('source.get_inventory(2).values["iron-ore"]=5;local cell=build_all();pulse();pulse();pulse();assert(not cell.flow);for n=1,5 do pulse() end;assert(cell.flow)', tmp_path)
+
+
+def test_composed_reattachment_preserves_paid_route_and_flow():
+    runtime = pytest.importorskip("lupa").LuaRuntime()
+    runtime.execute(FIXTURE.read_text())
+    runtime.execute("""
+        source.type="furnace"
+        storage.fair.tick_handler=function() end
+        handlers[1]=storage.fair.tick_handler
+        local output=storage.output_buffers
+        output.protocol=1; output.offers={}
+        output.observer=nil; output.transfer=nil
+        local cell=output.cells["recipe:iron-plate"]
+        cell.source="recipe:iron-plate"; cell.source_position=source.position
+        cell.chest_position=chest.position; cell.inserter_position=output_arm.position
+        cell.direction=output_arm.direction
+        cell.parts.chest.role="out:chest"; cell.parts.chest.unit_number=chest.unit_number
+        cell.parts.inserter.role="out:arm"; cell.parts.inserter.unit_number=output_arm.unit_number
+        base_observe=storage.campaign.observe; base_transfer=storage.campaign.transfer
+    """)
+    output = (ROOT / "src/jev_factorio/lua/output_buffers.lua").read_text()
+    runtime.execute(output)
+    runtime.execute(ADAPTER.read_text())
+    runtime.execute("route_cell=build_all(); initial_placements=placements")
+    for _ in range(25):
+        runtime.execute(output)
+        runtime.execute(ADAPTER.read_text())
+        runtime.execute("""
+            assert(storage.output_buffers.previous_observe==base_observe)
+            assert(storage.output_buffers.previous_transfer==base_transfer)
+            pulse()
+            assert(not route_cell.fault and placements==initial_placements)
+        """)
+    runtime.execute("assert(route_cell.flow and route_cell.flow.new_plates>=3)")
 
 
 def test_productivity_drift_invalidates_existing_route(tmp_path):
