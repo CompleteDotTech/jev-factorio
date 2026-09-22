@@ -1,0 +1,140 @@
+flowchart TD
+
+subgraph FACTORY["4. Deterministic factory dependency planner"]
+    FP["Read native recipe, technology<br/>and machine catalog"]
+    FP_READY{"Connected player and<br/>factory telemetry available?"}
+    FP_BIND{"Player bound to existing character?"}
+    EMIT_BIND["Emit factory_bind"]
+    CRAFT_BUSY{"Native crafting queue busy?"}
+    EMIT_WAIT["Emit factory_wait<br/>With explicit observed effect and timeout"]
+    BOILER_LOW{"Existing boiler needs fuel?"}
+    GOAL_BRANCH{"Requested factory goal?"}
+    NEED_IRON["Need 10 iron plates"]
+    NEED_SCIENCE["Need 10 automation science packs"]
+    NEED_LAB["Ensure lab and steam power"]
+    NEED_ROCKET_TECH["Ensure rocket-silo technology"]
+    SILO_READY{"Silo rocket ready?"}
+    EMIT_LAUNCH["Emit factory_launch"]
+    PARTS_DONE{"Required rocket parts complete?"}
+    ROCKET_BUILD["Produce rocket parts<br/>Up to 10 batches per planning request"]
+    NEED["Need item and quantity"]
+    HAVE{"Enough carried inventory?"}
+    OUTPUT{"Available in a known machine output?"}
+    EMIT_EXTRACT["Emit factory_extract"]
+    RAW{"Raw resource?"}
+    RAW_EVIDENCE{"Current validated native site observed?<br/>Name, surface and finite position"}
+    EMIT_EXPLORE["Emit bounded factory_explore<br/>Generate additional terrain<br/>Block at exploration limit"]
+    EMIT_GATHER["Emit factory_gather<br/>Wood: one requested unit<br/>Other raw resources: at most 50<br/>ID binds resource, site and inventory target"]
+    RECIPE["Resolve native recipe<br/>Detect dependency cycles and expansion limits"]
+    UNLOCKED{"Recipe unlocked?"}
+    HAND{"Hand-craftable with solid ingredients?"}
+    INGREDIENTS["Recursively satisfy ingredients"]
+    EMIT_CRAFT["Emit factory_craft<br/>At most 20 batches"]
+    PRODUCTION["Prepare native machine production"]
+    MACHINE["Ensure compatible machine exists<br/>Otherwise need its item, then factory_place"]
+    CONFIGURE["Configure unlocked recipe if necessary"]
+    ENERGY{"Machine energy source?"}
+    FUEL["Need coal and insert into burner<br/>Respect native stack capacity"]
+    POWER["Ensure offshore pump, boiler and steam engine<br/>Connect water and steam<br/>Fuel boiler"]
+    POWER_LINK["Need poles and connect electricity"]
+    INPUTS["Account for buffered inputs<br/>and currently in-flight crafting"]
+    INPUT_KIND{"Missing ingredient type?"}
+    SOLID["Need solid ingredient<br/>Then emit factory_insert"]
+    FLUID["Resolve water pump, powered oil pumpjack,<br/>or recursive fluid recipe"]
+    FLUID_BUFFERS["For multi-fluid outputs,<br/>ensure tanks and output connections"]
+    CONNECT["Ensure physical connection<br/>Need carried pipes or poles<br/>Bound construction budget"]
+    EMIT_CONNECT["Emit factory_connect"]
+    PRODUCTION_WAIT["Wait for native machine output"]
+    RESEARCH["Ensure technology"]
+    TECH_DONE{"Already researched?"}
+    TECH_PARENTS["Recursively ensure prerequisite technologies"]
+    TRIGGER{"Research trigger?"}
+    TRIGGER_CRAFT["Need and natively produce required item<br/>Wait for technology unlock"]
+    TRIGGER_OIL["Ensure native oil extraction<br/>Wait for technology unlock"]
+    TECH_LAB["Ensure powered lab"]
+    TECH_ACTIVE{"Research active?"}
+    EMIT_RESEARCH["Emit factory_research"]
+    SCIENCE_INPUT["Need required science packs<br/>Insert into lab"]
+    RESEARCH_WAIT["Wait for observed research increment<br/>or technology completion"]
+    EMITTED["Return first bounded prerequisite plan<br/>Replan after observed effects"]
+
+    COMPILE -->|Factory goal| FP
+    FP --> FP_READY
+    FP_READY -->|No| BLOCKED
+    FP_READY -->|Yes| FP_BIND
+    FP_BIND -->|No| EMIT_BIND --> EMITTED
+    FP_BIND -->|Yes| CRAFT_BUSY
+    CRAFT_BUSY -->|Yes| EMIT_WAIT --> EMITTED
+    CRAFT_BUSY -->|No| BOILER_LOW
+    BOILER_LOW -->|Yes| FUEL
+    BOILER_LOW -->|No| GOAL_BRANCH
+    GOAL_BRANCH -->|Iron smelting| NEED_IRON --> NEED
+    GOAL_BRANCH -->|Automation science| NEED_SCIENCE --> NEED
+    GOAL_BRANCH -->|Steam power| NEED_LAB --> MACHINE
+    GOAL_BRANCH -->|Rocket launch| NEED_ROCKET_TECH --> RESEARCH
+    NEED --> HAVE
+    HAVE -->|Yes| EMITTED
+    HAVE -->|No| OUTPUT
+    OUTPUT -->|Yes| EMIT_EXTRACT --> EMITTED
+    OUTPUT -->|No| RAW
+    RAW -->|Yes| RAW_EVIDENCE
+    RAW_EVIDENCE -->|No| EMIT_EXPLORE --> EMITTED
+    RAW_EVIDENCE -->|Yes| EMIT_GATHER --> EMITTED
+    RAW -->|No| RECIPE --> UNLOCKED
+    UNLOCKED -->|No| RESEARCH
+    UNLOCKED -->|Yes| HAND
+    HAND -->|Yes| INGREDIENTS
+    INGREDIENTS -->|Missing dependency| NEED
+    INGREDIENTS -->|All available| EMIT_CRAFT --> EMITTED
+    HAND -->|No| PRODUCTION
+    PRODUCTION --> MACHINE --> CONFIGURE --> ENERGY
+    MACHINE -->|Construction material missing| NEED
+    MACHINE -->|Placement or configuration needed| EMITTED
+    CONFIGURE -->|Configuration action needed| EMITTED
+    ENERGY -->|Electric| POWER --> POWER_LINK
+    ENERGY -->|Burner| FUEL
+    ENERGY -->|Already supplied| INPUTS
+    POWER_LINK --> CONNECT
+    FUEL -->|Coal missing| NEED
+    FUEL -->|Transfer needed| EMITTED
+    FUEL -->|Fuel sufficient| INPUTS
+    INPUTS --> INPUT_KIND
+    INPUT_KIND -->|Solid missing| SOLID --> NEED
+    SOLID -->|Available for transfer| EMITTED
+    INPUT_KIND -->|Fluid missing| FLUID
+    FLUID -->|Needs production| RECIPE
+    FLUID -->|Multi-fluid output| FLUID_BUFFERS --> CONNECT
+    FLUID -->|Source available| CONNECT
+    CONNECT -->|Materials missing| NEED
+    CONNECT -->|Not connected| EMIT_CONNECT --> EMITTED
+    CONNECT -->|Already connected| INPUTS
+    INPUT_KIND -->|Inputs satisfied| PRODUCTION_WAIT --> EMIT_WAIT
+    RESEARCH --> TECH_DONE
+    TECH_DONE -->|No| TECH_PARENTS --> TRIGGER
+    TECH_PARENTS -->|Parent missing| RESEARCH
+    TRIGGER -->|Craft item| TRIGGER_CRAFT --> NEED
+    TRIGGER -->|Mine crude oil| TRIGGER_OIL --> FLUID
+    TRIGGER -->|Unsupported trigger| BLOCKED
+    TRIGGER -->|Science-based| TECH_LAB --> TECH_ACTIVE
+    TECH_LAB -->|Infrastructure missing| MACHINE
+    TECH_ACTIVE -->|None| EMIT_RESEARCH --> EMITTED
+    TECH_ACTIVE -->|Different technology active| RESEARCH
+    TECH_ACTIVE -->|Requested technology active| SCIENCE_INPUT
+    SCIENCE_INPUT -->|Packs missing| NEED
+    SCIENCE_INPUT -->|Lab needs insertion| EMITTED
+    SCIENCE_INPUT -->|Lab supplied| RESEARCH_WAIT --> EMIT_WAIT
+    TECH_DONE -->|Prerequisite satisfied| RECIPE
+    TECH_DONE -->|Rocket-silo research satisfied| SILO_READY
+    SILO_READY -->|Yes| EMIT_LAUNCH --> EMITTED
+    SILO_READY -->|No| PARTS_DONE
+    PARTS_DONE -->|Yes| EMIT_WAIT
+    PARTS_DONE -->|No| ROCKET_BUILD --> PRODUCTION
+    EMITTED --> FILTER
+end
+
+
+    BLOCKED["Mark blocked<br/>Record exact blocker"]
+    COMPILE["Compile bounded executable plans<br/>Factory planner or bootstrap skill compiler"]
+    FILTER["Exclude plans with failure count of 2 or more"]
+classDef continuation fill:#fff7ed,stroke:#c2410c,stroke-dasharray:5 4;
+class BLOCKED,COMPILE,FILTER continuation;

@@ -1,0 +1,35 @@
+flowchart TD
+
+subgraph VERIFY["7. Pending-action verification"]
+    VERIFY_PENDING["Observe pending action before<br/>any new plan or mutation"]
+    PENDING_EFFECT{"Expected effect now observed?"}
+    SAFE_RECONCILE{"Narrow reconciliation predicate satisfied?"}
+    ABSENCE["Placement: entity absent and materials retained<br/>Connection: zero connectors and materials retained<br/>Ambiguous gather: after a poll, positive inventory<br/>still below committed target"]
+    MAINTENANCE{"Waiting action and boiler fuel low?"}
+    REPLAN_FUEL["Clear nonmutating wait<br/>Replan boiler refueling"]
+    POLLS["Increment pending poll count"]
+    EXPIRED{"Step tick timeout or poll limit reached?<br/>Native factory poll limit: at least 1800"}
+    NONMUTATING{"Action is idle or factory_wait?"}
+    UNCERTAIN["Mark uncertain<br/>Preserve pending action and reservations<br/>Require repair or reconciliation"]
+    WAIT_OBSERVE["Observe again without redispatch<br/>Real game time advances naturally"]
+
+    VERIFY_PENDING --> PENDING_EFFECT
+    PENDING_EFFECT -->|Yes| VERIFIED
+    PENDING_EFFECT -->|No| SAFE_RECONCILE
+    SAFE_RECONCILE -. exact implemented predicates .-> ABSENCE
+    SAFE_RECONCILE -->|Yes| FAILPLAN
+    SAFE_RECONCILE -->|No| MAINTENANCE
+    MAINTENANCE -->|Yes| REPLAN_FUEL --> RECORD
+    MAINTENANCE -->|No| POLLS --> EXPIRED
+    EXPIRED -->|No| WAIT_OBSERVE --> RECORD
+    EXPIRED -->|Yes| NONMUTATING
+    NONMUTATING -->|Yes| FAILPLAN
+    NONMUTATING -->|No| UNCERTAIN --> RECORD
+end
+
+
+    FAILPLAN["Increment this plan's failure count<br/>Release reservation and clear plan<br/>Preserve failure history"]
+    RECORD["Save checkpoint and append audit log<br/>Facts, decision, model usage, outcome,<br/>pending state and verification"]
+    VERIFIED["Release reservation<br/>Clear pending<br/>Advance step<br/>Reset stalled-decision count"]
+classDef continuation fill:#fff7ed,stroke:#c2410c,stroke-dasharray:5 4;
+class FAILPLAN,RECORD,VERIFIED continuation;
