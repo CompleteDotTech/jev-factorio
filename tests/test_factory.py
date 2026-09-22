@@ -862,13 +862,21 @@ def test_lua_transfers_conserve_items_and_reject_replay(capacity):
     lua = pytest.importorskip("lupa.lua54").LuaRuntime()
     lua.execute("""
         game = {tick = 10}
-        defines = {inventory = {character_main = 1, chest = 2}}
+        defines = {inventory = {character_main = 1, chest = 2, furnace_source = 3}}
         source_count = 5
         target_count = 0
         local inventory = {
             get_item_count = function() return source_count end,
             remove = function(stack) source_count = source_count-stack.count; return stack.count end,
             insert = function(stack) source_count = source_count+stack.count; return stack.count end
+        }
+        target_inventory = {
+            get_insertable_count = function() return capacity end,
+            insert = function(stack)
+                local inserted = math.min(capacity, stack.count)
+                target_count = target_count + inserted
+                return inserted
+            end
         }
         storage = {agent_characters = {{
             force = {rockets_launched = 0}, position = {x = 0, y = 0},
@@ -879,29 +887,27 @@ def test_lua_transfers_conserve_items_and_reject_replay(capacity):
         end}
     """)
     lua.execute(files("jev_factorio").joinpath("lua/factory.lua").read_text())
-    lua.globals().capacity = capacity
+    lua.execute(f"capacity = {capacity}")
     lua.execute("""
         storage.campaign.entities.furnace = {
-            valid = true, unit_number = 17, position = {x = 0, y = 0},
-            can_insert = function() return true end,
-            insert = function(stack)
-                local inserted = math.min(capacity, stack.count)
-                target_count = target_count + inserted
-                return inserted
-            end
+            valid = true, type = "furnace", unit_number = 17, position = {x = 0, y = 0},
+            get_inventory = function() return target_inventory end
         }
     """)
     command = "storage.campaign.transfer('furnace', 'coal', 5, 'unique', false)"
     if capacity < 5:
-        with pytest.raises(Exception, match="Partial transfer"):
+        with pytest.raises(Exception, match="destination capacity is short"):
             lua.execute(command)
+        assert lua.eval("source_count") == 5
+        assert lua.eval("target_count") == 0
+        assert lua.eval("storage.campaign.receipts.unique") is None
     else:
         lua.execute(command)
-    assert lua.eval("source_count + target_count") == 5
-    assert lua.eval("storage.campaign.receipts.unique.quantity") == capacity
-    with pytest.raises(Exception, match="already exists"):
-        lua.execute(command)
-    assert lua.eval("source_count + target_count") == 5
+        assert lua.eval("source_count + target_count") == 5
+        assert lua.eval("storage.campaign.receipts.unique.quantity") == capacity
+        with pytest.raises(Exception, match="already exists"):
+            lua.execute(command)
+        assert lua.eval("source_count + target_count") == 5
 
 
 def test_lua_transfer_rejects_remote_interaction_before_inventory_mutation():

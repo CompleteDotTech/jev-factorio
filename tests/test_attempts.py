@@ -127,6 +127,88 @@ def test_unresolved_receipt_stays_pending_and_never_replays(monkeypatch, tmp_pat
     assert len(backend.calls) == 1
 
 
+def test_ambiguous_native_partial_receipt_reconciles_without_replay(monkeypatch, tmp_path):
+    """Only an exact, live FLE receipt may turn a partial transfer into a replan."""
+    backend = ReceiptBackend("partial")
+    backend.state.world_kind = "fle"
+    backend.state.factory["player_bound"] = True
+    install_plan(monkeypatch, backend)
+    original_execute = backend.execute
+
+    def execute_then_report_partial(action, parameters):
+        original_execute(action, parameters)
+        raise RuntimeError("native transfer reported a partial result")
+
+    monkeypatch.setattr(backend, "execute", execute_then_report_partial)
+    first = controller(tmp_path, backend, max_pending_polls=1)
+    first.step()
+    backend.state.factory["receipts"]["transfer:0"]["tick"] = backend.state.tick
+    saved = load(tmp_path / "checkpoint.json")
+    assert saved.pending["dispatch"] == "ambiguous"
+    assert saved.reservations == {"same-plan-id": {}}
+    assert backend.state.factory["receipts"]["transfer:0"]["quantity"] == 10
+
+    resumed = controller(tmp_path, backend, resume=True, max_pending_polls=1)
+    result = resumed.step()
+
+    assert result["action"] == "reconcile" and result["status"] == "running"
+    assert "without replaying" in result["outcome"]
+    assert len(backend.calls) == 1
+    assert resumed.memory.pending is resumed.memory.active_plan is resumed.memory.attempt is None
+    assert resumed.memory.failures == {"same-plan-id": 1}
+    outcome = resumed.memory.attempt_outcomes[-1]
+    assert outcome["id"] == saved.attempt["id"]
+    assert outcome["outcome"] == "partial_transfer_reconciled"
+    event = next(event for event in resumed.memory.history
+                 if event["kind"] == "partial_transfer_reconciled")
+    assert event["receipt"] == "transfer:0"
+    assert event["requested_quantity"] == 20 and event["transferred_quantity"] == 10
+    reloaded = load(tmp_path / "checkpoint.json")
+    assert reloaded.pending is reloaded.active_plan is reloaded.attempt is None
+    assert reloaded.attempt_outcomes[-1] == outcome
+
+
+@pytest.mark.parametrize("change", [
+    "mock_world", "returned_dispatch", "wrong_entity", "wrong_receipt",
+])
+def test_partial_transfer_reconciliation_fails_closed_without_exact_evidence(
+    monkeypatch, tmp_path, change
+):
+    backend = ReceiptBackend("partial")
+    backend.state.world_kind = "fle"
+    backend.state.factory["player_bound"] = True
+    install_plan(monkeypatch, backend)
+    original_execute = backend.execute
+
+    def execute_then_report_partial(action, parameters):
+        original_execute(action, parameters)
+        raise RuntimeError("native transfer reported a partial result")
+
+    monkeypatch.setattr(backend, "execute", execute_then_report_partial)
+    first = controller(tmp_path, backend, max_pending_polls=1)
+    first.step()
+    backend.state.factory["receipts"]["transfer:0"]["tick"] = backend.state.tick
+    saved = load(tmp_path / "checkpoint.json")
+    receipt = backend.state.factory["receipts"]["transfer:0"]
+    if change == "mock_world":
+        backend.state.world_kind = "mock"
+    elif change == "returned_dispatch":
+        saved.pending["dispatch"] = "returned"
+    elif change == "wrong_entity":
+        backend.state.factory["entities"]["utility:lab"]["unit_number"] = 8
+    else:
+        receipt["role"] = "other"
+    saved.save(tmp_path / "checkpoint.json")
+
+    resumed = controller(tmp_path, backend, resume=True, max_pending_polls=1)
+    result = resumed.step()
+
+    assert result["status"] == "uncertain"
+    assert resumed.memory.attempt["id"] == saved.attempt["id"]
+    assert resumed.memory.reservations == saved.reservations
+    assert len(backend.calls) == 1
+
+
 def test_resumed_prepared_native_transfer_reuses_retained_action_only_before_rpc(
     monkeypatch, tmp_path
 ):

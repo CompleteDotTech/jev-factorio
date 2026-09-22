@@ -222,12 +222,26 @@ campaign.transfer = function(role, item, quantity, receipt, extracting)
     local machine = entity_for(role)
     local player = storage.fair.actor()
     assert(player.can_reach_entity(machine), "Transfer is out of reach")
+    local function destination_inventory()
+        if extracting then
+            return agent.get_inventory(defines.inventory.character_main)
+        elseif machine.type == "furnace" then
+            return machine.get_inventory(defines.inventory.furnace_source)
+        elseif machine.type == "lab" then
+            return machine.get_inventory(defines.inventory.lab_input)
+        elseif machine.type == "assembling-machine" or machine.type == "rocket-silo" then
+            return machine.get_inventory(defines.inventory.assembling_machine_input)
+        elseif machine.burner then
+            return machine.get_inventory(defines.inventory.fuel)
+        end
+    end
     local source = extracting and
         (machine.get_output_inventory() or machine.get_inventory(defines.inventory.chest))
         or agent.get_inventory(defines.inventory.character_main)
-    local target = extracting and agent or machine
+    local target = destination_inventory()
     assert(source and source.get_item_count(item) >= quantity, "Transfer source is short")
-    assert(target.can_insert{name = item, count = quantity}, "Transfer destination is full")
+    assert(target and target.get_insertable_count(item) >= quantity,
+        "Transfer destination capacity is short")
     local removed = source.remove{name = item, count = quantity}
     local inserted = target.insert{name = item, count = removed}
     if inserted < removed then
