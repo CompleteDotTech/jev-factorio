@@ -154,6 +154,10 @@ adding:
 ```
 
 This requires an existing supervised run and the same exclusive supervisor lock.
+If durable supervision state still names a process, the report is rejected
+without recovering, stopping, or clearing that process. Recover supervision
+separately before recording the intervention. Manual reporting also leaves an
+open repair attempt unchanged.
 It records the declaration and returns without gameplay or repair dispatch. It
 samples source with a separate ten-second bound even after the gameplay cutoff,
 without extending that cutoff. It never clears `repair_required`, pending work,

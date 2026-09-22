@@ -443,3 +443,40 @@ def test_interrupted_attempt_outbox_replays_once(supervisor, monkeypatch, after_
     assert rows[0]["source_before"] == A
     assert not supervisor.state["repair_attempt_open"]
     assert supervisor.state["repair_required"]
+
+
+def test_manual_report_rejects_saved_process_without_recovery(supervisor, monkeypatch):
+    supervisor.begin_repair("blocked")
+    supervisor.save(process={"pid": 4242, "identity": "live-identity"},
+                    repair_attempt_open=True, attempt=1,
+                    attempt_incident_id=supervisor.state["incident"]["incident_id"])
+    original_state = supervisor.state_path.read_bytes()
+    original_checkpoint = supervisor.config.checkpoint.read_bytes()
+    original_audit = (supervisor.config.state_dir / "events.jsonl").read_bytes()
+    monkeypatch.setattr(supervisor, "process_identity", lambda pid: "live-identity")
+    monkeypatch.setattr(supervisor, "kill_group", lambda *args: pytest.fail("manual report killed a process"))
+    monkeypatch.setattr(supervisor, "launch", lambda *args: pytest.fail("manual report launched a process"))
+    with pytest.raises(ValueError, match="no saved process"):
+        supervisor.run(manual_intervention={
+            "actor": "operator", "reason": "other", "evidence": ["captured review"]})
+    assert supervisor.state_path.read_bytes() == original_state
+    assert supervisor.config.checkpoint.read_bytes() == original_checkpoint
+    assert (supervisor.config.state_dir / "events.jsonl").read_bytes() == original_audit
+
+
+def test_manual_report_does_not_close_open_repair_attempt(supervisor, monkeypatch):
+    revision(supervisor, monkeypatch)
+    supervisor.begin_repair("blocked")
+    supervisor.save(repair_attempt_open=True, attempt=1,
+                    attempt_incident_id=supervisor.state["incident"]["incident_id"],
+                    attempt_source_before=A)
+    original_incident = json.loads(json.dumps(supervisor.state["incident"]))
+    original_checkpoint = supervisor.config.checkpoint.read_bytes()
+    monkeypatch.setattr(supervisor, "recover_process", lambda: pytest.fail("manual process recovery"))
+    monkeypatch.setattr(supervisor, "close_interrupted_attempt", lambda: pytest.fail("manual attempt closure"))
+    assert supervisor.run(manual_intervention={
+        "actor": "operator", "reason": "other", "evidence": ["captured review"]}) == 0
+    assert supervisor.state["repair_attempt_open"]
+    assert supervisor.state["incident"] == original_incident
+    assert supervisor.config.checkpoint.read_bytes() == original_checkpoint
+    assert events(supervisor)[-1]["event"] == "manual_intervention"
