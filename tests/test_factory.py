@@ -904,6 +904,41 @@ def test_lua_transfers_conserve_items_and_reject_replay(capacity):
     assert lua.eval("source_count + target_count") == 5
 
 
+def test_lua_transfer_rejects_remote_interaction_before_inventory_mutation():
+    lua = pytest.importorskip("lupa.lua54").LuaRuntime()
+    lua.execute("""
+        game = {tick = 10}
+        defines = {inventory = {character_main = 1, chest = 2}}
+        source_count = 5
+        target_count = 0
+        local inventory = {
+            get_item_count = function() return source_count end,
+            remove = function(stack) source_count = source_count-stack.count; return stack.count end,
+            insert = function(stack) source_count = source_count+stack.count; return stack.count end
+        }
+        storage = {agent_characters = {{
+            force = {rockets_launched = 0}, position = {x = 0, y = 0},
+            get_inventory = function() return inventory end
+        }}}
+        storage.fair = {actor = function()
+            return {can_reach_entity = function() return false end}
+        end}
+    """)
+    lua.execute(files("jev_factorio").joinpath("lua/factory.lua").read_text())
+    lua.execute("""
+        storage.campaign.entities.furnace = {
+            valid = true, unit_number = 17, position = {x = 100, y = 100},
+            can_insert = function() return true end,
+            insert = function(stack) target_count = target_count + stack.count; return stack.count end
+        }
+    """)
+    with pytest.raises(Exception, match="out of reach"):
+        lua.execute("storage.campaign.transfer('furnace', 'coal', 5, 'remote-denied', false)")
+    assert lua.eval("source_count") == 5
+    assert lua.eval("target_count") == 0
+    assert lua.eval("storage.campaign.receipts['remote-denied']") is None
+
+
 class FactorySimulation:
     def __init__(self, lose_transfer_ack=False):
         self.state = snapshot(inventory={"coal": 5})

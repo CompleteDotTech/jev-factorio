@@ -9,13 +9,52 @@ import requests
 from jev_factorio.backends.fle import FleBackend
 from jev_factorio.backends.native_factory import NativeFactory
 from jev_factorio.memory import CampaignMemory
-from jev_factorio.telemetry import error_code, phase, validate_attempt
+from jev_factorio.skills import Plan, Step
+from jev_factorio.telemetry import error_code, make_attempt, phase, utc_now, validate_attempt
 
 from attempt_helpers import ReceiptBackend, controller, install_plan
 
 
 def load(path):
     return CampaignMemory.load(path, "receipt-session", "bootstrap_mining")
+
+
+def prepared_native_transfer_checkpoint(tmp_path, backend):
+    """Persist a valid FLE transfer interrupted between approach and its RPC."""
+    loop = controller(tmp_path, backend)
+    snapshot = loop._observe()
+    step = Step(
+        "factory_insert", "transfer",
+        costs={"automation-science-pack": 20},
+        parameters={
+            "role": "utility:lab", "item": "automation-science-pack", "quantity": 20,
+            "receipt": "transfer:preserved",
+        },
+    )
+    plan = Plan("same-plan-id", "bootstrap_mining", "Preserved native transfer", (step,))
+    loop.memory.active_goal = "bootstrap_mining"
+    loop.memory.active_plan = plan.to_dict()
+    loop.memory.step_index = 0
+    loop.memory.reserve(plan.id, step.costs, snapshot.inventory)
+    loop.memory.pending = {
+        "started_tick": snapshot.tick, "polls": 0, "action": step.action, "dispatch": "prepared",
+    }
+    loop.memory.attempt = make_attempt(
+        snapshot.session_id, loop.target, loop.memory.active_plan, 0, loop.memory.pending,
+        process_id=loop._process_id, unit_number=7,
+    )
+    loop.memory.attempt["dispatch_phases"] = {
+        "dispatch": {
+            "stage": "dispatch", "status": "started", "at_utc": utc_now(),
+            "seconds": None, "error_code": None,
+        },
+        "approach": {
+            "stage": "approach", "status": "started", "at_utc": utc_now(),
+            "seconds": None, "error_code": None,
+        },
+    }
+    loop._save()
+    return load(tmp_path / "checkpoint.json")
 
 
 def test_attempt_is_saved_before_dispatch_and_bound_to_exact_step(monkeypatch, tmp_path):
@@ -86,6 +125,86 @@ def test_unresolved_receipt_stays_pending_and_never_replays(monkeypatch, tmp_pat
     assert resumed.memory.attempt["id"] == identity
     assert not resumed.memory.attempt_outcomes
     assert len(backend.calls) == 1
+
+
+def test_resumed_prepared_native_transfer_reuses_retained_action_only_before_rpc(
+    monkeypatch, tmp_path
+):
+    """A pre-RPC interruption may retry the same fair native transfer once.
+
+    The synthetic backend is FLE-shaped only to exercise the recovery gate; it
+    is not native-game evidence.  The test's explicit phase trace models the
+    durable NativeFactory ordering: approach begins before transfer_rpc, and a
+    process loss before the latter cannot have removed inventory or invoked the
+    Lua transfer endpoint.
+    """
+    backend = ReceiptBackend()
+    backend.state.world_kind = "fle"
+    backend.state.factory["player_bound"] = True
+    saved = prepared_native_transfer_checkpoint(tmp_path, backend)
+    assert saved.pending["dispatch"] == "prepared"
+    assert saved.attempt["dispatch_phases"]["dispatch"]["status"] == "started"
+    assert saved.attempt["dispatch_phases"]["approach"]["status"] == "started"
+    assert "transfer_rpc" not in saved.attempt["dispatch_phases"]
+    assert saved.reservations == {"same-plan-id": {"automation-science-pack": 20}}
+    assert backend.calls == []
+
+    native_path = []
+    def execute_traced(action, parameters, trace):
+        native_path.append((action, deepcopy(parameters)))
+        return backend.execute(action, parameters)
+    backend.execute_traced = execute_traced
+    resumed = controller(tmp_path, backend, resume=True, max_pending_polls=1)
+    result = resumed.step()
+
+    assert result["verified"] is True
+    assert result["outcome"].startswith("Re-dispatched retained transfer")
+    assert len(backend.calls) == 1
+    assert native_path == backend.calls
+    action, parameters = backend.calls[0]
+    assert action == "factory_insert"
+    assert parameters["receipt"] == saved.attempt["receipt"]
+    assert backend.state.inventory["automation-science-pack"] == 0
+    assert backend.state.factory["receipts"][parameters["receipt"]]["unit_number"] == 7
+    assert resumed.memory.pending is None
+    recovery = next(event for event in resumed.memory.history
+                    if event["kind"] == "prepared_transfer_recovery_authorized")
+    assert recovery["attempt_id"] == saved.attempt["id"]
+    assert recovery["original_dispatch_phases"] == saved.attempt["dispatch_phases"]
+
+
+@pytest.mark.parametrize("change", [
+    "ambiguous_dispatch", "transfer_rpc_started", "actor_not_bound",
+    "machine_changed", "source_not_retained",
+])
+def test_prepared_transfer_recovery_fails_closed_without_all_native_evidence(
+    monkeypatch, tmp_path, change
+):
+    backend = ReceiptBackend("no_effect")
+    backend.state.world_kind = "fle"
+    backend.state.factory["player_bound"] = True
+    saved = prepared_native_transfer_checkpoint(tmp_path, backend)
+    if change == "ambiguous_dispatch":
+        saved.pending["dispatch"] = "ambiguous"
+    elif change == "transfer_rpc_started":
+        saved.attempt["dispatch_phases"]["transfer_rpc"] = {
+            "stage": "transfer_rpc", "status": "started", "at_utc": utc_now(),
+            "seconds": None, "error_code": None,
+        }
+    elif change == "actor_not_bound":
+        backend.state.factory["player_bound"] = False
+    elif change == "machine_changed":
+        backend.state.factory["entities"]["utility:lab"]["unit_number"] = 8
+    else:
+        backend.state.inventory["automation-science-pack"] = 19
+    saved.save(tmp_path / "checkpoint.json")
+
+    resumed = controller(tmp_path, backend, resume=True, max_pending_polls=1)
+    result = resumed.step()
+    assert result["status"] == "uncertain"
+    assert resumed.memory.pending == {**saved.pending, "polls": saved.pending["polls"] + 1}
+    assert resumed.memory.reservations == saved.reservations
+    assert backend.calls == []
 
 
 def test_distinct_attempts_can_share_plan_id(monkeypatch, tmp_path):
