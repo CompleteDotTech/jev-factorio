@@ -111,7 +111,7 @@ def test_raw_gather_commits_one_observed_fair_target_with_a_unique_postcondition
     first = FactoryPlanner(catalog(), state, "rocket_launch")._need("wood", 20)
 
     assert first.id == (
-        'factory:factory_gather:wood:target:13:quantity:1:site:'
+        'factory:factory_gather:wood:target:13:site:'
         '{"name":"tree-01","position":{"x":3.0,"y":4.0},"surface_index":1}'
     )
     assert first.steps[0].parameters == {"resource": "wood", "quantity": 1}
@@ -122,26 +122,6 @@ def test_raw_gather_commits_one_observed_fair_target_with_a_unique_postcondition
 
     assert later.id == first.id.replace("target:13:", "target:14:")
     assert later.steps[0].parameters == {"resource": "wood", "quantity": 1}
-
-
-def test_partial_fair_ore_harvest_replans_a_distinct_observed_remainder():
-    state = snapshot(inventory={"iron-ore": 0}, nearby_resources={"iron-ore": 5})
-    first = FactoryPlanner(catalog(), state, "rocket_launch")._need("iron-ore", 20)
-    assert first.steps[0].parameters == {"resource": "iron-ore", "quantity": 20}
-    assert first.steps[0].threshold == 20
-
-    # A lost acknowledgement may leave a real partial harvest.  Its failure
-    # budget must prevent replaying the old 20-ore command, while permitting
-    # one new fair command for the observed one-ore remainder at the same site.
-    state.inventory["iron-ore"] = 19
-    remainder = FactoryPlanner(catalog(), state, "rocket_launch")._need("iron-ore", 20)
-
-    assert remainder.id != first.id
-    assert remainder.steps[0].parameters == {"resource": "iron-ore", "quantity": 1}
-    assert remainder.steps[0].threshold == 20
-    assert [plan.id for plan in (first, remainder) if {first.id: 2}.get(plan.id, 0) < 2] == [
-        remainder.id
-    ]
 
 
 @pytest.mark.parametrize("changed_site", [
@@ -522,9 +502,7 @@ def test_native_observation_rejects_resource_without_a_native_site(monkeypatch, 
         "name": "tree-01" if item == "wood" else item, "surface_index": 1,
         **invalid_site,
     }}
-    assert FactoryPlanner(catalog(), state, "rocket_launch")._fair_resource_identity(
-        item, 13, 1
-    ) is None
+    assert FactoryPlanner(catalog(), state, "rocket_launch")._fair_resource_identity(item, 13) is None
 
 
 def test_native_fluid_points_keep_typed_filters_and_boiler_steam_output():
@@ -1132,6 +1110,145 @@ def test_unacknowledged_gather_with_observed_partial_yield_replans_without_dispa
     assert controller.memory.active_plan is None
     assert controller.memory.reservations == {}
     assert controller.memory.failures == {plan.id: 1}
+    receipt = next(event for event in controller.memory.history
+                   if event["kind"] == "gather_partial_progress")
+    assert Plan.from_dict(receipt["plan"]) == Plan.from_dict(plan.to_dict())
+    assert receipt["observed_inventory"] == 8
+
+
+def partial_gather_fixture():
+    state = snapshot(inventory={"iron-ore": 0})
+    original = FactoryPlanner(catalog(), state, "rocket_launch")._need("iron-ore", 20)
+    state.inventory["iron-ore"] = 19
+    controller = HierarchicalLoop(SimpleNamespace(), policy="deterministic", tick_seconds=0)
+    controller.memory = CampaignMemory(
+        session_id=state.session_id, target="rocket_launch", active_goal="rocket_launch",
+        completed_goals={"stockpile_fuel": 1, "bootstrap_mining": 1},
+        last_tick=state.tick, failures={original.id: 2},
+    )
+    controller.memory.event(
+        "gather_partial_progress", session_id=state.session_id,
+        plan=original.to_dict(), step_index=0, observed_inventory=19,
+        tick=state.tick, started_tick=1, attempt_id="observed-original-attempt",
+    )
+    return controller, state, original
+
+
+def test_partial_gather_scopes_only_the_proven_remainder_and_preserves_budgets(tmp_path, monkeypatch):
+    controller, state, original = partial_gather_fixture()
+    checkpoint = tmp_path / "checkpoint.json"
+    controller.memory.save(checkpoint)
+    controller.memory = CampaignMemory.load(checkpoint, state.session_id, "rocket_launch")
+    actions = []
+
+    def execute(action, parameters):
+        actions.append((action, dict(parameters)))
+        state.inventory["iron-ore"] += parameters["quantity"]
+        state.tick += 1
+        return "Synthetic fair gather"
+
+    controller.backend = SimpleNamespace(observe=lambda: deepcopy(state), execute=execute)
+    monkeypatch.setattr("jev_factorio.controller.compile_plans", lambda goal, current: (
+        [FactoryPlanner(catalog(), current, goal)._need("iron-ore", 20)], ""
+    ))
+    record = controller.step()
+    assert record["verified"] is True
+    assert actions == [("factory_gather", {"resource": "iron-ore", "quantity": 1})]
+    assert controller.memory.failures == {original.id: 2}
+    assert any(event.get("plan") == original.id + ":remainder-quantity:1"
+               for event in controller.memory.history if event["kind"] == "plan_committed")
+
+
+def test_remainder_identity_does_not_reset_its_own_exhausted_budget(monkeypatch):
+    controller, state, original = partial_gather_fixture()
+    remainder = original.id + ":remainder-quantity:1"
+    controller.memory.failures[remainder] = 2
+    actions = []
+    controller.backend = SimpleNamespace(observe=lambda: deepcopy(state),
+                                         execute=lambda *args: actions.append(args))
+    monkeypatch.setattr("jev_factorio.controller.compile_plans", lambda goal, current: (
+        [FactoryPlanner(catalog(), current, goal)._need("iron-ore", 20)], ""
+    ))
+    record = controller.step()
+    assert record["status"] == "blocked"
+    assert actions == []
+    assert controller.memory.failures == {original.id: 2, remainder: 2}
+
+
+@pytest.mark.parametrize("scheduling", ["serial", "ready-work"])
+def test_factory_scheduling_modes_scope_the_same_proven_remainder(monkeypatch, scheduling):
+    controller, state, original = partial_gather_fixture()
+    controller.catalog = catalog()
+    controller.factory_scheduling = scheduling
+    remainder = FactoryPlanner(catalog(), state, "rocket_launch")._need("iron-ore", 20)
+    module = "factory.compile_factory" if scheduling == "serial" else "ready_work.compile_ready_factory"
+    monkeypatch.setattr(f"jev_factorio.planning.{module}", lambda *args: ([remainder], ""))
+    plans, blocker = controller._compile_candidates(state)
+    assert not blocker
+    assert plans[0].id == original.id + ":remainder-quantity:1"
+    assert plans[0].steps[0].parameters == {"resource": "iron-ore", "quantity": 1}
+
+
+@pytest.mark.parametrize("change", [
+    "missing", "wrong_session", "future_tick", "bad_tick", "wrong_site", "wrong_goal",
+    "unchanged_inventory", "wrong_observation", "wrong_target", "same_quantity",
+    "missing_attempt", "malformed_plan", "wrong_step",
+])
+def test_remainder_authorization_fails_closed_without_matching_positive_progress(change):
+    controller, state, original = partial_gather_fixture()
+    receipt = controller.memory.history[-1]
+    if change == "missing":
+        controller.memory.history.clear()
+    elif change == "wrong_session":
+        receipt["session_id"] = "other-world"
+    elif change == "future_tick":
+        receipt["tick"] = state.tick + 1
+    elif change == "bad_tick":
+        receipt["started_tick"] = True
+    elif change == "wrong_site":
+        receipt["plan"]["id"] += "-different-site"
+    elif change == "wrong_goal":
+        receipt["plan"]["goal"] = "stockpile_fuel"
+    elif change == "unchanged_inventory":
+        state.inventory["iron-ore"] = 0
+    elif change == "wrong_observation":
+        receipt["observed_inventory"] = 18
+    elif change == "wrong_target":
+        receipt["plan"]["steps"][0]["threshold"] = 21
+    elif change == "same_quantity":
+        receipt["plan"]["steps"][0]["parameters"]["quantity"] = 1
+    elif change == "missing_attempt":
+        receipt.pop("attempt_id")
+    elif change == "malformed_plan":
+        receipt["plan"] = {"steps": None}
+    elif change == "wrong_step":
+        receipt["step_index"] = 1
+    plan = FactoryPlanner(catalog(), state, "rocket_launch")._need("iron-ore", 20)
+    assert controller._gather_remainder_plan(plan, state).id == original.id
+    assert controller.memory.failures == {original.id: 2}
+
+
+@pytest.mark.parametrize("dispatch", ["prepared", "ambiguous"])
+def test_positive_preexisting_inventory_is_not_partial_gather_progress(dispatch):
+    controller, state, original = partial_gather_fixture()
+    step = Step("factory_gather", "inventory", "iron-ore", 20,
+                parameters={"resource": "iron-ore", "quantity": 1})
+    controller.memory.pending = {"dispatch": dispatch, "polls": 1, "started_tick": 1}
+    assert not controller._partial_unacknowledged_gather(step, state)
+
+
+def test_legacy_wood_failure_budget_identity_is_unchanged_without_progress_receipt():
+    state = snapshot(inventory={"wood": 12}, nearby_resources={"wood": 3})
+    state.factory["fair_resource_targets"]["wood"] = {
+        "name": "tree-01", "surface_index": 1, "position": {"x": 3.0, "y": 4.0},
+    }
+    plan = FactoryPlanner(catalog(), state, "rocket_launch")._need("wood", 20)
+    legacy_id = ('factory:factory_gather:wood:target:13:site:'
+                 '{"name":"tree-01","position":{"x":3.0,"y":4.0},"surface_index":1}')
+    controller = HierarchicalLoop(SimpleNamespace(), policy="deterministic")
+    controller.memory = CampaignMemory(state.session_id, "rocket_launch", failures={legacy_id: 2})
+    assert controller._gather_remainder_plan(plan, state).id == legacy_id
+    assert controller.memory.failures[legacy_id] == 2
 
 
 @pytest.mark.parametrize("change", [
