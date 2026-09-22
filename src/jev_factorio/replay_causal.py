@@ -16,6 +16,15 @@ def audit_producer(events: list[dict], report) -> None:
 
         if kind in {"run_started", "run_finished"}:
             continue
+        if kind not in {
+            "step_started", "step_finished", "step_failed", "observation",
+            "observation_validated", "model_request", "model_response",
+            "candidate_set_created", "candidate_set_filtered", "decision",
+            "plan_committed", "plan_failed", "plan_progress", "precondition_checked",
+            "action_prepared", "action_returned", "verification", "pending_expired",
+            "checkpoint_written", "goal_checked", "goal_completed", "goal_activated",
+        }:
+            issue("unsupported_causal_event", "Event is preserved but its causal semantics are unknown", "gap")
         identities = ("trace_id", "decision_id", "observation_id", "model_call_id",
                       "action_id", "plan_id", "related_action_id")
         if any(payload.get(name) is not None and (
@@ -72,6 +81,8 @@ def audit_producer(events: list[dict], report) -> None:
                 issue("invalid_model_reference", "Model response has no preceding request")
             elif call["result"] is not None:
                 issue("duplicate_model_result", "Model call has multiple results")
+            elif call["request"]["payload"].get("decision_id") != decision:
+                issue("model_decision_conflict", "Model response belongs to another decision")
             else:
                 call["result"] = event
         elif kind == "decision":
@@ -133,6 +144,8 @@ def audit_producer(events: list[dict], report) -> None:
                 captured["result"] = event
                 captured["acknowledgment"] = "returned" if payload.get("status") == "ok" else "ambiguous"
                 prepared = captured["prepared"]["payload"]
+                if prepared.get("decision_id") != decision:
+                    issue("action_decision_conflict", "Action result belongs to another decision")
                 if any(payload.get(key) != prepared.get(key) for key in ("action", "parameters", "plan_id", "step_index")):
                     issue("action_result_conflict", "Action result differs from preparation")
             elif kind == "verification":

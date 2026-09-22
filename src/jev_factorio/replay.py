@@ -128,7 +128,9 @@ class ReplayReport:
             "schema": REPORT_SCHEMA, "status": self.status,
             "offline": True, "replay_authorized": False,
             "behavior_reexecuted": False, "authenticity_established": False,
-            "audit_scope": ["structure", "hash_chain", "causal_links", "candidate_membership", "plan_dispatch_consistency"],
+            "audit_scope": (["structure", "hash_chain", "captured_causal_references", "plan_dispatch_consistency"]
+                            if self.format == "research-v1" else
+                            ["structure", "hash_chain", "causal_links", "candidate_membership", "plan_dispatch_consistency"]),
             "not_recomputed": ["policy_selection", "postcondition_truth", "world_evolution"],
             "format": self.format, "run_id": self.run_id,
             "manifest": self.manifest, "integrity": self.integrity,

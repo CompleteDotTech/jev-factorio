@@ -17,7 +17,7 @@ def capture(tmp_path):
         trace.begin_step()
         trace.observe(MockBackend(), "before_decision")
         trace.emit("candidate_set_created", {"candidates": {"idle": "wait"}, "status": "ok"})
-        trace.emit("decision", {"action": "idle", "model_called": False})
+        trace.emit("decision", {"action": "idle", "model_called": False, "reason": "矿石"})
         trace.dispatch(lambda: "waited", "idle", role="flat")
         trace.observe(MockBackend(), "after_action")
         trace.emit("verification", {"verified": None, "phase": "flat"})
@@ -73,3 +73,23 @@ def test_resealed_invalid_causal_reference_is_rejected(tmp_path):
     report = replay_log(path, format="research-v1")
     assert report.status == "invalid"
     assert any(finding.code == "invalid_action_reference" for finding in report.findings)
+
+
+def test_missing_seal_preserves_unknown_completeness(tmp_path):
+    path = capture(tmp_path)
+    (path / "integrity.json").unlink()
+    report = replay_log(path, format="research-v1")
+    assert report.status == "incomplete"
+    assert report.integrity["status"] == "incomplete_source"
+    assert any(finding.code == "missing_integrity_seal" for finding in report.findings)
+
+
+def test_noncanonical_bytes_are_not_accepted_as_original_evidence(tmp_path):
+    path = capture(tmp_path)
+    file = path / "events.jsonl"
+    rows = file.read_text().splitlines()
+    rows[0] = json.dumps(json.loads(rows[0]), indent=None)
+    file.write_text("\n".join(rows) + "\n")
+    report = replay_log(path, format="research-v1")
+    assert report.status == "invalid"
+    assert report.decisions == []
