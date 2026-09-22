@@ -93,3 +93,34 @@ def test_noncanonical_bytes_are_not_accepted_as_original_evidence(tmp_path):
     report = replay_log(path, format="research-v1")
     assert report.status == "invalid"
     assert report.decisions == []
+
+
+@pytest.mark.parametrize("case", ["cross_decision_model", "repeated_plan", "invalid_model_flag"])
+def test_resealed_invalid_causal_claims_fail(tmp_path, case):
+    from jev_factorio.research_log import ResearchLog, RunConfiguration
+    path = tmp_path / "research"
+    with ResearchLog(path, RunConfiguration("mock", "flat", "jev"), environ={}) as sink:
+        context = {"trace_id": "trace", "decision_id": "decision:1"}
+        if case == "cross_decision_model":
+            sink.emit("model_request", {**context, "model_call_id": "model:1"})
+            sink.emit("model_response", {**context, "model_call_id": "model:1", "status": "ok"})
+            sink.emit("decision", {**context, "decision_id": "decision:2",
+                                   "model_call_id": "model:1", "model_called": True})
+        elif case == "repeated_plan":
+            for action in ("idle", "mine_coal"):
+                sink.emit("plan_committed", {**context, "plan_id": "plan",
+                                             "plan": {"id": "plan", "steps": [{"action": action}]}})
+        else:
+            sink.emit("decision", {**context, "model_called": []})
+    report = replay_log(path, format="research-v1")
+    assert report.status == "invalid"
+
+
+def test_noncanonical_manifest_never_claims_verified_integrity(tmp_path):
+    path = capture(tmp_path)
+    file = path / "manifest.json"
+    file.write_text(json.dumps(json.loads(file.read_text())) + "\n")
+    report = replay_log(path, format="research-v1")
+    assert report.status == "invalid"
+    assert report.integrity["status"] == "invalid"
+    assert report.decisions == []

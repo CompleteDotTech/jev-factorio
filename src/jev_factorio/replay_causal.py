@@ -89,10 +89,14 @@ def audit_producer(events: list[dict], report) -> None:
             if frame["selection"] is not None:
                 issue("duplicate_decision", "Decision identity has multiple selections")
             frame["selection"] = event
+            if "model_called" in payload and type(payload["model_called"]) is not bool:
+                issue("invalid_model_flag", "Captured model-called flag is not boolean")
             if payload.get("model_called"):
                 call = models.get((trace, model))
                 if call is None or call["result"] is None:
                     issue("invalid_model_reference", "Model-backed selection lacks preceding request/result")
+                elif call["request"]["payload"].get("decision_id") != decision:
+                    issue("model_decision_conflict", "Selection references another decision's model call")
             issue("unknown_candidate_reference", "Producer records no explicit candidate-set identity", "gap")
         elif kind == "plan_committed":
             definition = payload.get("plan")
@@ -101,11 +105,19 @@ def audit_producer(events: list[dict], report) -> None:
             elif definition.get("id") != plan:
                 issue("plan_identity_conflict", "Committed plan identity disagrees with its definition")
             else:
+                prior = plans.get((trace, plan))
+                if prior is not None and prior["payload"].get("decision_id") == decision:
+                    issue("duplicate_plan_commitment", "Decision repeats a plan commitment")
                 plans[trace, plan] = event
             selection = frame["selection"]
             if selection is not None and selection["payload"].get("plan_id") != plan:
                 issue("plan_selection_conflict", "Committed plan differs from recorded selection")
         elif kind == "action_prepared":
+            selection = frame["selection"]
+            if selection is not None and payload.get("role") != "mock_clock_advance":
+                chosen_action = selection["payload"].get("action")
+                if chosen_action is not None and chosen_action != payload.get("action"):
+                    issue("action_selection_conflict", "Prepared action differs from recorded selection")
             if not isinstance(action, str) or not action:
                 issue("missing_action_id", "Prepared action lacks identity", "gap")
             elif (trace, action) in actions:
@@ -170,4 +182,8 @@ def audit_producer(events: list[dict], report) -> None:
     for call in models.values():
         if call["result"] is None:
             report.add("gap", "unfinished_model_call", "Model request has no recorded result")
+    for frame in frames.values():
+        if not any(event["event_type"] in {"step_finished", "step_failed"} for event in frame["evidence"]):
+            report.add("gap", "unfinished_step", "Captured decision step has no terminal event",
+                       decision_id=frame["decision_id"])
     report.decisions = list(frames.values())

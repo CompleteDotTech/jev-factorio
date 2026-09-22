@@ -738,6 +738,7 @@ truth or authorship. Missing evidence remains unknown and appears as a gap.
         for gap in checked["gaps"]:
             report.add("gap", gap, "Original producer evidence is incomplete")
         if report.status == "invalid":
+            report.integrity["status"] = "invalid"
             return report
         audit_producer([event for _, event in rows], report)
         return report
