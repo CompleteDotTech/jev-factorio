@@ -3,17 +3,21 @@ from __future__ import annotations
 
 from .research_events import EvidenceError, MixedTreatmentError, VerifiedRun, canonical, digest, text, utc
 from .research_evaluation import NON_WORK_ACTIONS, RunEvaluation, _duration, _usage
+from .telemetry import WAIT_ACTIONS
 
 
 def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -> RunEvaluation:
     manifest = run.manifest
     config = manifest["configuration"]
+    non_work_actions = NON_WORK_ACTIONS | WAIT_ACTIONS
     run_id = manifest["run_id"]
     tables = {name: [] for name in ("events", "decisions", "model_calls", "actions",
                                     "milestones", "interventions")}
     observations, decisions, calls, actions, milestones = {}, {}, {}, {}, {}
     goal_checks = {}
-    sessions, worlds, traces, models = set(), set(), set(), set()
+    observation_decisions, action_payloads, action_returns, steps = {}, {}, {}, {}
+    finished_steps = set()
+    sessions, worlds, traces, models, requested_models = set(), set(), set(), set(), set()
     problems = set()
     warnings = {"missing_initial_world_hashes", "missing_experiment_metadata"}
     terminal = None
@@ -59,7 +63,23 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
             "duration_ms": _duration(payload), "event_hash": event["event_hash"],
         }
         tables["events"].append(row)
-        if kind == "observation":
+        if kind in {"observation", "observation_validated", "model_request", "model_response",
+                    "decision", "action_prepared", "action_returned", "verification",
+                    "goal_checked", "goal_completed"}:
+            step_key = identity(payload, "decision_id")
+            if step_key not in steps or step_key in finished_steps:
+                raise EvidenceError("Causal event lacks an active controller step")
+        if kind == "step_started":
+            key = identity(payload, "decision_id")
+            if key in steps:
+                raise EvidenceError("Duplicate causal step identity")
+            steps[key] = sequence
+        elif kind in {"step_finished", "step_failed"}:
+            key = identity(payload, "decision_id")
+            if key not in steps or key in finished_steps:
+                raise EvidenceError("Causal step completion lacks its unique start")
+            finished_steps.add(key)
+        elif kind == "observation":
             if payload.get("status") == "error":
                 warnings.add("failed_observation")
                 continue
@@ -71,11 +91,14 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
                 if snapshot.get(field) != payload.get(field):
                     raise EvidenceError("Observation identity differs from causal envelope")
             observations[key] = (sequence, snapshot)
+            observation_decisions[key] = row["decision_id"]
         elif kind == "model_request":
             key = identity(payload, "model_call_id")
             if key in calls:
                 raise EvidenceError("Duplicate causal model request")
             requested = payload.get("requested_model")
+            if requested is not None:
+                requested_models.add(text(requested, "requested_model"))
             if config.get("requested_model") is not None and requested != config["requested_model"]:
                 problems.add("changed:requested_model")
             calls[key] = {
@@ -122,6 +145,9 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
                 raise EvidenceError("Duplicate causal action")
             if identity(payload, "decision_id") not in decisions:
                 warnings.add("dispatch_without_new_decision")
+            if identity(payload, "decision_id") not in steps:
+                raise EvidenceError("Causal action lacks its controller step")
+            action_payloads[key] = payload
             actions[key] = {
                 "run_id": run_id, "action_id": row["action_id"],
                 "decision_id": row["decision_id"], "segment_id": trace,
@@ -138,6 +164,12 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
                 raise EvidenceError("Invalid causal action return status")
             if payload.get("action") != actions[key]["action"]:
                 raise EvidenceError("Causal action return changes action identity")
+            if row["decision_id"] != actions[key]["decision_id"]:
+                raise EvidenceError("Causal action return changes decision identity")
+            if any(payload.get(field) != action_payloads[key].get(field)
+                   for field in ("plan_id", "step_index", "attempt_id", "role")):
+                raise EvidenceError("Causal action return changes preparation identity")
+            action_returns[key] = payload["status"]
             actions[key].update(returned_sequence=sequence,
                                 duration_ms=_duration(payload))
             warnings.add("backend_acknowledgment_unavailable")
@@ -151,12 +183,36 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
             key = identity(payload, "action_id")
             if key not in actions:
                 raise EvidenceError("Verification references unknown causal action")
+            observation_key = identity(payload, "observation_id")
+            observation = observations.get(observation_key)
+            returned = actions[key]["returned_sequence"]
+            if returned is None:
+                raise EvidenceError("Verification precedes causal action return")
+            if observation is None or observation[0] <= returned:
+                raise EvidenceError("Verification lacks post-dispatch observation")
+            if observation_decisions[observation_key] != row["decision_id"]:
+                raise EvidenceError("Verification changes observation decision identity")
+            if identity(payload, "decision_id") not in steps:
+                raise EvidenceError("Verification lacks its controller step")
             if verified is None:
                 warnings.add("verification_predicate_unavailable")
                 continue
-            observation = observations.get(identity(payload, "observation_id"))
-            if observation is None or observation[0] <= actions[key]["prepared_sequence"]:
-                raise EvidenceError("Verification lacks post-dispatch observation")
+            prepared = action_payloads[key]
+            predicate, pending = payload.get("predicate"), prepared.get("pending")
+            if (payload.get("status") != "ok" or not isinstance(predicate, dict)
+                    or predicate.get("action") != actions[key]["action"]
+                    or payload.get("action_origin") != "current_trace"
+                    or not isinstance(pending, dict)
+                    or payload.get("started_tick") != pending.get("started_tick")
+                    or any(payload.get(field) != prepared.get(field)
+                           for field in ("plan_id", "step_index", "attempt_id"))):
+                raise EvidenceError("Verification lacks matching explicit action predicate")
+            if row["decision_id"] != actions[key]["decision_id"] and payload.get("phase") != "pending_poll":
+                raise EvidenceError("Verification changes decision outside pending polling")
+            if action_returns[key] == "error":
+                if payload.get("phase") != "pending_poll":
+                    raise EvidenceError("Ambiguous action return requires pending predicate verification")
+                warnings.add("verification_after_ambiguous_return")
             actions[key]["verification_count"] += 1
             if verified and not actions[key]["verified"]:
                 actions[key].update(verified=True, verified_sequence=sequence)
@@ -190,6 +246,8 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
         raise EvidenceError("Mixed causal world sessions or kinds")
     if len(models) > 1:
         problems.add("changed:resolved_model")
+    if len(requested_models) > 1:
+        problems.add("changed:requested_model")
     if len(traces) > 1:
         problems.add("multiple_controller_traces")
     if problems and not allow_mixed_treatments:
@@ -203,8 +261,10 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
         warnings.add("unknown_session")
     if world is None:
         warnings.add("unknown_world_kind")
-    if not traces:
+    if not steps:
         warnings.add("lifecycle_only")
+    if steps.keys() - finished_steps:
+        warnings.add("unfinished_causal_steps")
     if unknown_events:
         warnings.add("uninterpreted_event_types")
     if not run.integrity["complete"]:
@@ -243,18 +303,19 @@ def reduce_core_run(run: VerifiedRun, *, allow_mixed_treatments: bool = False) -
         "provider_errors": sum(call["status"] == "error" for call in calls.values()),
         "prepared_actions": len(actions),
         "returned_actions": sum(action["returned_sequence"] is not None for action in actions.values()),
-        "verified_actions": sum(action["verified"] and action["action"] not in NON_WORK_ACTIONS
+        "verified_actions": sum(action["verified"] and action["action"] not in non_work_actions
                                 for action in actions.values()),
-        "verified_waits": sum(action["verified"] and action["action"] in NON_WORK_ACTIONS
+        "verified_waits": sum(action["verified"] and action["action"] in non_work_actions
                               for action in actions.values()),
         "unverified_actions": sum(not action["verified"] for action in actions.values()),
         "models": sorted(models), "milestones": sorted(milestones), "interventions": {},
+        "requested_models": sorted(requested_models),
         "wall_elapsed_seconds": elapsed, "event_head_hash": run.integrity["head_hash"],
         "uninterpreted_event_types": sorted(unknown_events),
     }
     for kind in ("input", "output"):
         field = kind + "_tokens"
-        complete = bool(traces) and all(call[field] is not None for call in calls.values())
+        complete = bool(steps) and all(call[field] is not None for call in calls.values())
         total = sum(call[field] or 0 for call in calls.values())
         summary[field] = total if complete else None
         summary[field + "_recorded"] = total

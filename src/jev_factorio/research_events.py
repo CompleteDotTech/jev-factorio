@@ -11,6 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import tempfile
 from typing import Any
 
 EVENT_SCHEMA = "jev-factorio.event.v1"
@@ -96,7 +97,7 @@ class VerifiedRun:
 def read_run(path: Path, *, manifest_path: Path | None = None) -> VerifiedRun:
     """Validate the entire captured stream before returning any usable evidence.
 
-    No salvage, skipped lines, version guessing, backend calls, or evidence writes.
+    No salvage, skipped lines, version guessing, backend calls, or source writes.
     A hash-valid prefix without run_finished is valid but explicitly incomplete.
     """
     path = Path(path)
@@ -231,16 +232,22 @@ def _read_core_run(events_path: Path, manifest_path: Path, raw_manifest: bytes,
     raw_seal = seal_path.read_bytes() if seal_path.exists() else None
     events = []
     source_hash = hashlib.sha256()
-    with events_path.open("rb") as stream:
-        for raw in iter(lambda: stream.readline(MAX_LINE_BYTES + 1), b""):
-            if len(raw) > MAX_LINE_BYTES or not raw.endswith(b"\n"):
-                raise EvidenceError("Oversized or unterminated core event")
-            source_hash.update(raw)
-            events.append(load_json(raw))
-    try:
-        verified = verify_run(events_path.parent, allow_incomplete=True)
-    except (ValueError, OSError) as exc:
-        raise EvidenceError(f"Core evidence verification failed: {exc}") from exc
+    with tempfile.TemporaryDirectory(prefix="jev-evaluation-") as temporary:
+        captured = Path(temporary)
+        (captured / "manifest.json").write_bytes(raw_manifest)
+        if raw_seal is not None:
+            (captured / "integrity.json").write_bytes(raw_seal)
+        with events_path.open("rb") as stream, (captured / "events.jsonl").open("wb") as copy:
+            for raw in iter(lambda: stream.readline(MAX_LINE_BYTES + 1), b""):
+                if len(raw) > MAX_LINE_BYTES or not raw.endswith(b"\n"):
+                    raise EvidenceError("Oversized or unterminated core event")
+                copy.write(raw)
+                source_hash.update(raw)
+                events.append(load_json(raw))
+        try:
+            verified = verify_run(captured, allow_incomplete=True)
+        except (ValueError, OSError) as exc:
+            raise EvidenceError(f"Core evidence verification failed: {exc}") from exc
     second_hash = hashlib.sha256()
     with events_path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):

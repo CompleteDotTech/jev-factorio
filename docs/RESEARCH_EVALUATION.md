@@ -18,7 +18,10 @@ Canonical runs retain their original `manifest.json`, `events.jsonl`, and, for a
 sealed lifecycle, `integrity.json`. Evaluation reports
 `source_format: logging-core-v1`, validates with the producer verifier, and
 preserves original manifest/event objects, canonical hashes, and source-file
-hashes. It does not rewrite the producer's envelope into the proposed format.
+hashes. The reader verifies a private temporary copy of the exact captured bytes,
+then projects those same captured records. The copy is removed after verification;
+source files are never modified. It does not rewrite the producer's envelope into
+the proposed format.
 The producer's compact, sorted ASCII JSON encoding differs from the proposed
 contract's UTF-8 encoding for non-ASCII strings; the schema label alone cannot
 justify choosing a hash algorithm.
@@ -27,6 +30,12 @@ justify choosing a hash algorithm.
 It does not establish target completion. A target requires causal milestone
 evidence; backend operation return likewise does not prove postcondition success
 or explicit backend acknowledgment. Unsealed valid prefixes remain incomplete.
+An attributed action verification requires its return before the verifying
+observation, consistent action and controller-step identities, and a matching
+explicit predicate, plan, step index, and pending start. Delayed `pending_poll`
+verification may belong to a later decision. An ambiguous dispatch error only
+counts when that later pending predicate verifies the effect; it remains flagged
+as ambiguous and does not become a positive backend acknowledgment.
 Unknown session, world identity, experiment condition, seed, and initial-world
 hashes remain null. A configured mock backend alone does not invent an observed
 world identity. Missing model usage and resolved model identity remain unknown.
@@ -59,7 +68,7 @@ an event JSONL with a sibling manifest. A non-sibling manifest can be supplied f
 one proposed-contract input with `--manifest PATH`. Canonical logging-core inputs
 require their original sibling filenames and directory layout so the producer
 verifier can validate the manifest, event stream, and seal together. Reading
-alone writes nothing:
+never writes to the source run:
 
 ```sh
 python -m jev_factorio.evaluation runs/trial-001
@@ -290,11 +299,11 @@ implementation retains decoded events and projected rows in memory (O(events));
 it does not claim constant-memory processing of arbitrarily large campaigns.
 
 ```sh
-PYTHONPATH=src python -m pytest tests/test_research_evaluation.py -q
+PYTHONPATH=src python -m pytest tests/test_research_evaluation.py tests/test_research_core_evaluation.py -q
 python -m compileall -q src
 # Full optional export verification:
 python -m pip install -e '.[evaluation]' pytest duckdb
-PYTHONPATH=src python -m pytest tests/test_research_evaluation.py -q
+PYTHONPATH=src python -m pytest tests/test_research_evaluation.py tests/test_research_core_evaluation.py -q
 ```
 
 The existing full-repository CI suite remains unchanged in scope; a separate
