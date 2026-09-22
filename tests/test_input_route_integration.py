@@ -36,6 +36,27 @@ def native_catalog():
     return value
 
 
+@pytest.mark.parametrize("background", [False, True])
+def test_reconstructed_controllers_reuse_nested_native_adapters(background):
+    commands = []
+    state = game()
+    state.factory["craft_job_inventory"] = {"tick": state.tick, "items": {"coal": 5}}
+    native = SimpleNamespace(command=commands.append, observe=lambda snapshot: snapshot)
+    backend = SimpleNamespace(_factory=native, enable_factory=native_catalog)
+    base = BackgroundWorkLoop if background else HierarchicalLoop
+    loop_type = input_loop_type(buffered_loop_type(base))
+    options = {"policy": "deterministic", "factory_scheduling": "ready-work"}
+    loop_type(backend, **options)
+    adapter = backend._factory
+    for _ in range(25):
+        loop_type(backend, **options)
+        assert backend._factory is adapter
+        observed = backend._factory.observe(deepcopy(state))
+        if background:
+            assert observed.inventory == {"coal": 5}
+    assert len(commands) == (3 if background else 2)
+
+
 class RouteBackend:
     input_routes_supported = True
     output_buffers_supported = True

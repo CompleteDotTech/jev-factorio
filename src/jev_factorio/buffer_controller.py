@@ -22,9 +22,10 @@ class OutputBufferMixin:
             raise ValueError("Output buffers require a native production catalog")
         native = getattr(backend, "_factory", None)
         if native is not None:
+            from .backends import has_adapter
             from .backends.output_buffers import OutputBufferFactory
 
-            if not isinstance(native, OutputBufferFactory):
+            if not has_adapter(native, OutputBufferFactory):
                 backend._factory = OutputBufferFactory(native)
         elif getattr(backend, "output_buffers_supported", False) is not True:
             raise ValueError("Backend does not support output-buffer evidence")

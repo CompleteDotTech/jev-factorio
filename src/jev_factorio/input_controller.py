@@ -19,9 +19,11 @@ class InputRouteMixin:
         super().__init__(backend, jev, **options)
         native = getattr(backend, "_factory", None)
         if native is not None:
+            from .backends import has_adapter
             from .backends.input_routes import InputRouteFactory
 
-            backend._factory = InputRouteFactory(native)
+            if not has_adapter(native, InputRouteFactory):
+                backend._factory = InputRouteFactory(native)
         elif getattr(backend, "input_routes_supported", False) is not True:
             raise ValueError("Backend does not support input-route evidence")
 
