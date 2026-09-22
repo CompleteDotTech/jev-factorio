@@ -367,7 +367,7 @@ def test_native_observation_admits_only_a_fair_native_wood_target(monkeypatch):
     observed = factory.observe(state)
 
     assert calls == [
-        ("next_mine_target", item, 64 if item == "wood" else 128)
+        ("discover_mine_target", item, {"x": 0, "y": 0}, 256)
         for item in ("wood", "coal", "iron-ore", "copper-ore", "stone")
     ]
     assert factory.backend._resources["wood"] == fle.Position(x=3, y=4)
@@ -420,9 +420,10 @@ def test_native_observation_uses_fair_site_admission_for_all_ores(monkeypatch):
             assert resource in {fle.Resource.Water, fle.Resource.CrudeOil}
             return fle.Position(x=9, y=7)
 
-    def native_mine_target(function, resource, radius):
-        assert function == "next_mine_target"
-        assert radius == (64 if resource == "wood" else 128)
+    def native_mine_target(function, resource, center, radius):
+        assert function == "discover_mine_target"
+        assert center == {"x": 0, "y": 0}
+        assert radius == 256
         requested.append(resource)
         if resource == "wood":
             return {}
@@ -453,6 +454,45 @@ def test_native_observation_uses_fair_site_admission_for_all_ores(monkeypatch):
         assert observed.factory["fair_resource_targets"][item] == {
             "name": item, "surface_index": 1, "position": {"x": 3.0, "y": 4.0},
         }
+
+
+def test_native_observation_discovers_ore_across_the_generated_exploration_area(monkeypatch):
+    fle = pytest.importorskip("fle.env")
+    calls = []
+
+    class Tools:
+        def nearest(self, resource):
+            assert resource in {fle.Resource.Water, fle.Resource.CrudeOil}
+            return fle.Position(x=9, y=7)
+
+    def discover(function, resource, center, radius):
+        calls.append((function, resource, center, radius))
+        if resource != "copper-ore":
+            return {}
+        return {
+            "name": "copper-ore", "surface_index": 1,
+            "position": {"x": 640, "y": -128},
+        }
+
+    factory = object.__new__(NativeFactory)
+    factory.catalog = SimpleNamespace(version="2.0.77")
+    factory.backend = SimpleNamespace(
+        _drill=None, _resources={}, _tools=Tools(), _fair=SimpleNamespace(call=discover),
+    )
+    monkeypatch.setattr(factory, "command", lambda script: (
+        '{"tick": 17, "entities": {}, "researched": [], '
+        '"rockets_launched": 0, "rocket_baseline": 0, "exploration_radius": 32}'
+    ))
+
+    observed = factory.observe(snapshot(world_kind="fle", player_position=(0, 0)))
+
+    assert ("discover_mine_target", "copper-ore", {"x": 0, "y": 0}, 1024) in calls
+    assert observed.nearby_resources["copper-ore"] == pytest.approx(
+        (640 ** 2 + 128 ** 2) ** 0.5
+    )
+    assert observed.factory["fair_resource_targets"]["copper-ore"] == {
+        "name": "copper-ore", "surface_index": 1, "position": {"x": 640.0, "y": -128.0},
+    }
 
 
 @pytest.mark.parametrize("item", ["wood", "coal", "iron-ore", "copper-ore", "stone"])

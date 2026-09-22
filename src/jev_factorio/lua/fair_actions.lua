@@ -3,6 +3,19 @@ local fair = storage.fair
 fair.quarantined = true
 script.on_nth_tick(5, nil)
 script.on_nth_tick(15, nil)
+script.on_nth_tick(60, nil)
+
+if storage.actions and storage.actions.inspect_inventory
+    and storage.actions.inspect_inventory ~= fair.inspect_inventory then
+    local inspect_inventory = storage.actions.inspect_inventory
+    fair.inspect_inventory = function(...)
+        local result = table.pack(pcall(inspect_inventory, ...))
+        script.on_nth_tick(60, nil)
+        if not result[1] then error(result[2]) end
+        return table.unpack(result, 2, result.n)
+    end
+    storage.actions.inspect_inventory = fair.inspect_inventory
+end
 
 fair.actor = function()
     local player = game.get_player(1)
@@ -30,6 +43,7 @@ fair.bind = function()
     fair.quarantined = true
     script.on_nth_tick(5, nil)
     script.on_nth_tick(15, nil)
+    script.on_nth_tick(60, nil)
     for _, name in pairs({"crafting_queue", "harvest_queues", "walking_queues"}) do
         assert(not storage[name] or next(storage[name]) == nil,
             "Legacy scripted work must be reconciled: " .. name)
@@ -43,7 +57,7 @@ fair.bind = function()
     if not player.character then
         player.set_controller{type = defines.controllers.character, character = character}
     end
-    fair.actor()
+    local player = fair.actor()
     storage.fast = false
     fair.stop("Controls stopped on adapter attachment")
     fair.quarantined = false
@@ -142,6 +156,39 @@ fair.next_mine_target = function(item, radius)
                 if player.selected == entity then
                     best, best_distance = entity, distance
                 end
+            end
+        end
+    end
+    if not best then return {} end
+    return {
+        position = {x = best.position.x, y = best.position.y},
+        unit_number = best.unit_number,
+        name = best.name,
+        surface_index = best.surface.index,
+    }
+end
+
+fair.discover_mine_target = function(item, center, radius)
+    -- Discovery is deliberately read-only.  It may inspect only terrain the
+    -- campaign already generated, but it never changes the player's cursor or
+    -- controls.  The later fair harvesting path walks to the returned entity
+    -- and independently verifies normal reach and cursor selection.
+    local player = fair.actor()
+    assert(type(item) == "string", "Mining item must be a string")
+    assert(type(center) == "table" and type(center.x) == "number"
+        and type(center.y) == "number", "Mining search center is invalid")
+    assert(type(radius) == "number" and radius > 0 and radius <= 1024,
+        "Mining discovery radius is invalid")
+    local filter = {position = center, radius = radius}
+    if item == "wood" then filter.type = "tree" else filter.name = item end
+    local best, best_distance
+    for _, entity in pairs(player.surface.find_entities_filtered(filter)) do
+        if entity.valid and entity.minable then
+            local horizontal = entity.position.x - center.x
+            local vertical = entity.position.y - center.y
+            local distance = horizontal * horizontal + vertical * vertical
+            if not best or distance < best_distance then
+                best, best_distance = entity, distance
             end
         end
     end

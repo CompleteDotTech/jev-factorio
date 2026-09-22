@@ -18,6 +18,11 @@ shortcuts.
   Tree targeting probes native cursor selection and skips trunks obscured by
   another entity's selection box. This changes selection only, not movement,
   mining, entity state or inventory.
+- Bounded exploration can inspect the terrain it already generated to discover
+  a candidate resource. That read-only discovery does not select a cursor
+  target, move the player, mine, transfer, or alter speed. The actual gather
+  still walks to the recorded entity and `begin_mine` independently enforces
+  native reach and cursor selection.
 - Placement transfers an existing inventory stack into the cursor and uses
   `can_build_from_cursor` / `build_from_cursor`. It verifies an actual item debit
   and returns remaining cursor items. Obstructions are not removed by relocation.
@@ -32,6 +37,9 @@ shortcuts.
   speed other than 1. A short renewed control lease stops input if the controller
   disappears. Path, progress, and observation timeouts fail closed.
 - Legacy FLE walking/mining callbacks are quarantined before attachment.
+  Inventory inspection also clears FLE's delayed GUI-close callback, including
+  error paths; it can retain a character that becomes invalid on disconnect.
+  Inventory results and errors are preserved without that cosmetic callback.
   Inherited `on_tick` callbacks are retained for inspection but never invoked
   while this adapter owns controls, including idle and terminal job states.
   This prevents stale callbacks from restarting input after cancellation or

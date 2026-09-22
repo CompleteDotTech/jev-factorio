@@ -68,11 +68,20 @@ class NativeFactory:
         snapshot.victory_source = "native:base-game-rocket-launch" if snapshot.victory else None
         snapshot.tick = factory["tick"]
         factory.pop("fair_resource_targets", None)
+        generated_radius = factory.get("exploration_radius", 8)
+        if type(generated_radius) is not int or not 1 <= generated_radius <= 32:
+            raise RuntimeError("Invalid bounded exploration radius")
+        # ``factory_explore`` generates terrain around the campaign origin in
+        # chunk units.  Discovery inspects that already-generated area only;
+        # it never moves or selects a target.  FairActions subsequently walks
+        # to the selected entity and checks native reach before mining.
+        discovery_radius = generated_radius * 32
         for resource in ("wood", "coal", "iron-ore", "copper-ore", "stone"):
             self.backend._resources.pop(resource, None)
             snapshot.nearby_resources.pop(resource, None)
-            radius = 64 if resource == "wood" else 128
-            observed = self.backend._fair.call("next_mine_target", resource, radius)
+            observed = self.backend._fair.call(
+                "discover_mine_target", resource, {"x": 0, "y": 0}, discovery_radius
+            )
             candidate = observed.get("position") if isinstance(observed, dict) else None
             name = observed.get("name") if isinstance(observed, dict) else None
             surface_index = observed.get("surface_index") if isinstance(observed, dict) else None

@@ -53,8 +53,19 @@ class SupervisorConfig:
     run_id: str | None = None
     run_manifest: Path | None = None
     research_dir: Path | None = None
+    factory_scheduling: str = "serial"
+    background_work: bool = False
+    furnace_output_buffers: bool = False
+    furnace_input_belts: bool = False
 
     def validate(self) -> None:
+        if self.factory_scheduling not in {"serial", "ready-work"}:
+            raise ValueError("Unknown factory scheduling mode")
+        if (self.background_work or self.furnace_output_buffers or self.furnace_input_belts
+                ) and self.factory_scheduling != "ready-work":
+            raise ValueError("Production extensions require ready-work scheduling")
+        if self.furnace_input_belts and not self.furnace_output_buffers:
+            raise ValueError("Furnace input belts require furnace output buffers")
         if self.run_id is not None:
             identifier(self.run_id)
         for name in ("started_at", "duration_hours", "poll_seconds", "hang_seconds",
@@ -275,6 +286,15 @@ class Supervisor:
         else:
             self.state = {**identity, "attempt": 0, "phase": "ready", "process": None}
             self.save()
+        configuration = {
+            name: getattr(self.config, name) for name in (
+                "factory_scheduling", "background_work",
+                "furnace_output_buffers", "furnace_input_belts",
+            )
+        }
+        if self.state.get("gameplay_configuration", configuration) != configuration:
+            raise ValueError("Existing gameplay configuration cannot be changed")
+        self.save(gameplay_configuration=configuration)
         if record_only and self.state.get("process"):
             raise ValueError("Manual intervention requires no saved process; recover supervision separately")
         self.initialize_provenance(existing=existing)
@@ -366,6 +386,7 @@ class Supervisor:
             self.sleep(min(self.config.poll_seconds, until - self.clock()))
 
     def gameplay_command(self) -> list[str]:
+        self.config.validate()
         command = [
             self.config.python, "-m", "jev_factorio", "--backend", "fle", "--resume",
             "--resume-controller", "--controller", "hierarchical", "--policy", "hybrid",
@@ -374,7 +395,11 @@ class Supervisor:
             "--duration-hours", str(self.remaining() / 3600),
             "--tick-seconds", str(self.config.tick_seconds),
             "--log-file", str(self.config.state_dir / "gameplay.jsonl"),
+            "--factory-scheduling", self.config.factory_scheduling,
         ]
+        for name in ("background_work", "furnace_output_buffers", "furnace_input_belts"):
+            if getattr(self.config, name):
+                command.append("--" + name.replace("_", "-"))
         if self.config.research_dir is not None:
             command.extend(["--run-dir", str(
                 self.config.research_dir.resolve() / f"invocation-{uuid4()}"
@@ -421,6 +446,7 @@ Research segment: {self.state['segment_id']}
 Incident: {(self.state.get('incident') or {}).get('incident_id')}
 Repair attempt: {self.state['attempt']}
 Controller checkpoint: {self.config.checkpoint}
+Production configuration: scheduling={self.config.factory_scheduling}, background_work={self.config.background_work}, furnace_output_buffers={self.config.furnace_output_buffers}, furnace_input_belts={self.config.furnace_input_belts}
 Supervisor audit/log directory: {self.config.state_dir}
 Read {self.config.state_dir / 'OPERATIONS.md'} first if present for native session
 and repository acceptance details.
@@ -824,6 +850,10 @@ def cli() -> None:
     parser.add_argument("--poll-seconds", type=float, default=5)
     parser.add_argument("--backoff-seconds", type=float, default=30)
     parser.add_argument("--tick-seconds", type=float, default=1)
+    parser.add_argument("--factory-scheduling", choices=("serial", "ready-work"), default="serial")
+    parser.add_argument("--background-work", action="store_true")
+    parser.add_argument("--furnace-output-buffers", action="store_true")
+    parser.add_argument("--furnace-input-belts", action="store_true")
     arguments = vars(parser.parse_args())
     try:
         manual_path = arguments.pop("record_manual_intervention")

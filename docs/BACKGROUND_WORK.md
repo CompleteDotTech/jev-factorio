@@ -28,10 +28,13 @@ catalog and is deliberately rejected for this option. Tests use an explicitly
 synthetic receipt-capable backend with the real controller instead. Binding,
 normal speed/reach, native controls, and resource-site checks remain in force.
 
-The live autonomous supervisor has not been migrated to this checkpoint
-extension. Use only a separately authorized standalone controller for native
-acceptance until the supervisor/diagnostics/evaluator integration is reconciled.
-Do not inject the flag into the running supervisor or overwrite its checkpoint.
+The autonomous supervisor accepts these flags and forwards them on every
+gameplay launch. Its repair validation preserves background jobs, attempts, and
+input-route commitments. Diagnostics and research evidence understand these
+extensions. Enable them only for an explicitly authorized campaign; preserve
+checkpoints and native receipts across restarts. Optional furnace automation
+also requires `--furnace-output-buffers`; `--furnace-input-belts` requires that
+output-buffer flag. Native throughput improvements remain unverified.
 
 ## Execution and evidence contract
 
