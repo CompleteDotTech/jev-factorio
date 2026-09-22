@@ -163,6 +163,9 @@ def test_ambiguous_native_partial_receipt_reconciles_without_replay(monkeypatch,
                  if event["kind"] == "partial_transfer_reconciled")
     assert event["receipt"] == "transfer:0"
     assert event["requested_quantity"] == 20 and event["transferred_quantity"] == 10
+    reloaded = load(tmp_path / "checkpoint.json")
+    assert reloaded.pending is reloaded.active_plan is reloaded.attempt is None
+    assert reloaded.attempt_outcomes[-1] == outcome
 
 
 @pytest.mark.parametrize("change", [
