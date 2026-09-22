@@ -196,21 +196,22 @@ class HierarchicalLoop(AgentLoop):
             and retained and count == 0
         )
 
-    def _partial_ambiguous_gather(self, step, snapshot: GameSnapshot) -> bool:
+    def _partial_unacknowledged_gather(self, step, snapshot: GameSnapshot) -> bool:
         """Identify a partial native gather without treating it as step success.
 
         An inventory increase below the committed threshold is not a license to
         replay an unacknowledged harvest.  The resumed controller instead fails
         this plan and replans from the observed inventory.  This is deliberately
         narrower than normal inventory verification: it applies only after an
-        ambiguous factory gather has already been observed at least once.
+        prepared or ambiguous factory gather has already been observed at least
+        once.
         """
         pending = self.memory.pending or {}
         parameters = step.parameters or {}
         item = parameters.get("resource")
         observed = snapshot.inventory.get(item, 0) if isinstance(item, str) else 0
         return bool(
-            pending.get("dispatch") == "ambiguous"
+            pending.get("dispatch") in {"prepared", "ambiguous"}
             and type(pending.get("polls")) is int and pending["polls"] > 0
             and step.action == "factory_gather" and step.effect == "inventory"
             and item == step.item and item
@@ -247,11 +248,11 @@ class HierarchicalLoop(AgentLoop):
             self.memory.status = "running"
             self._fail_plan(reason)
             return self._record(snapshot, "reconcile", reason)
-        if self._partial_ambiguous_gather(step, snapshot):
+        if self._partial_unacknowledged_gather(step, snapshot):
             quantity = snapshot.inventory[step.item]
             reason = (
                 f"Observed {quantity} {step.item} below committed inventory threshold "
-                f"{step.threshold} after an ambiguous native gather; replan without "
+                f"{step.threshold} after an unacknowledged native gather; replan without "
                 "replaying the ambiguous dispatch"
             )
             self.memory.status = "running"
