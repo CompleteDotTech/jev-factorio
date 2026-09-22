@@ -10,6 +10,7 @@ COMMAND_FIELDS = {
     "factory_explore": {"radius"},
     "factory_gather": {"resource", "quantity"},
     "factory_craft": {"recipe", "batches"},
+    "factory_craft_job": {"recipe", "batches", "receipt"},
     "factory_place": {"role", "name", "anchor"},
     "factory_configure": {"role", "recipe"},
     "factory_insert": {"role", "item", "quantity", "receipt"},
@@ -23,7 +24,7 @@ EFFECTS = {
     "player_bound", "machine", "machine_recipe", "machine_input", "machine_fuel",
     "machine_output", "connection", "research_started", "researched", "research_progress",
     "crafting_idle", "rocket_ready", "rocket_parts", "rocket_launched", "produced", "transfer",
-    "explored", "powered",
+    "explored", "powered", "craft_job_complete",
 }
 
 
@@ -66,6 +67,10 @@ def satisfied(effect: str, item: str, threshold: float, parameters: dict, snapsh
     factory = snapshot.factory
     entities = factory.get("entities", {})
     machine = entities.get(parameters.get("role", ""), {})
+    if effect == "craft_job_complete":
+        from .craft_jobs import craft_complete
+
+        return action == "factory_craft_job" and craft_complete(parameters, snapshot)
     if effect == "player_bound":
         return factory.get("player_bound") is True
     if effect == "explored":
@@ -122,6 +127,10 @@ def allowed(action: str, parameters: dict, snapshot: GameSnapshot) -> bool:
         return parameters["resource"] in snapshot.nearby_resources
     if action == "factory_place":
         return not machine and snapshot.inventory.get(parameters["name"], 0) >= 1
+    if action == "factory_craft_job":
+        return (type(factory.get("craft_jobs_protocol")) is int
+                and factory["craft_jobs_protocol"] == 1
+                and allowed("factory_craft", {key: parameters[key] for key in ("recipe", "batches")}, snapshot))
     if action == "factory_craft":
         return (factory.get("player_connected") is True
                 and factory.get("player_bound") is True and factory.get("crafting_queue") == 0)

@@ -31,6 +31,8 @@ def _json_safe(value):
 
 
 class HierarchicalLoop(AgentLoop):
+    memory_type = CampaignMemory
+
     def __init__(self, backend, jev=None, *, target: str = "rocket_launch",
                  policy: str = "jev", checkpoint: str | None = None,
                  resume_controller: bool = False, confidence_floor: float = 0.45,
@@ -87,8 +89,8 @@ class HierarchicalLoop(AgentLoop):
         # Validate serialized facts rather than allowing NaN into conditions.
         json.dumps(snapshot.for_jev(), allow_nan=False)
         if self.memory is None:
-            self.memory = (CampaignMemory.load(self.checkpoint, snapshot.session_id, self.target)
-                           if self.resume_controller else CampaignMemory(snapshot.session_id, self.target))
+            self.memory = (self.memory_type.load(self.checkpoint, snapshot.session_id, self.target)
+                           if self.resume_controller else self.memory_type(snapshot.session_id, self.target))
         if self.memory.session_id != snapshot.session_id or snapshot.tick < self.memory.last_tick:
             raise ValueError("Session changed or observation tick regressed; refusing to act")
         self.memory.last_tick = snapshot.tick
@@ -155,12 +157,22 @@ class HierarchicalLoop(AgentLoop):
         metrics = getattr(fair, "metrics", None)
         if isinstance(metrics, dict):
             record["fair_action_metrics"] = dict(metrics)
+        record.update(self._record_extras())
         if self.log_file:
             self.log_file.parent.mkdir(parents=True, exist_ok=True)
             with self.log_file.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(_json_safe(record), allow_nan=False) + "\n")
         print(f"[t={before.tick}] {self.memory.status}: {action} -> {outcome}", flush=True)
         return record
+
+    def _record_extras(self) -> dict:
+        return {}
+
+    def _step_allowed(self, step, snapshot: GameSnapshot) -> bool:
+        return step.allowed(snapshot)
+
+    def _execution_barrier(self, snapshot: GameSnapshot) -> bool:
+        return False
 
     def _absent_ambiguous_placement(self, plan: Plan, step, snapshot: GameSnapshot) -> bool:
         """Prove that retrying an ambiguous placement cannot duplicate a building."""
@@ -382,6 +394,8 @@ class HierarchicalLoop(AgentLoop):
 
         # The world can change while a remote model evaluates the old snapshot.
         fresh = self._observe()
+        if self._execution_barrier(fresh):
+            return self._record(snapshot, "observe", self.memory.reason, fresh)
         plan = Plan.from_dict(self.memory.active_plan)
         index = plan.next_step(fresh, self.memory.step_index)
         if index == len(plan.steps):
@@ -390,7 +404,7 @@ class HierarchicalLoop(AgentLoop):
             return self._record(snapshot, "verify", "Plan effects already observed", fresh, True)
         self.memory.step_index = index
         step = plan.steps[index]
-        if not step.allowed(fresh):
+        if not self._step_allowed(step, fresh):
             self._fail_plan("Plan precondition changed; replan from current observations")
             return self._record(snapshot, "observe", self.memory.reason, fresh)
         try:
@@ -413,6 +427,9 @@ class HierarchicalLoop(AgentLoop):
         self.memory.pending["dispatch"] = "returned"
         self._save()
         after = self._observe()  # On failure, pending remains durable for the next iteration.
+        if self._execution_barrier(after):
+            return self._record(snapshot, step.action,
+                                str(outcome) + "; pending retained for reconciliation", after)
         verified = step.satisfied(after)
         if verified:
             self.memory.release(plan.id)

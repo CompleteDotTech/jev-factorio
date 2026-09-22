@@ -46,6 +46,8 @@ def cli() -> None:
     p.add_argument("--controller", choices=("flat", "hierarchical"), default="flat")
     p.add_argument("--factory-scheduling", choices=("serial", "ready-work"), default="serial",
                    help="Opt-in bounded production choices; does not enable concurrent mutations or belts")
+    p.add_argument("--background-work", action="store_true",
+                   help="Opt-in receipt-tracked crafting and research prefetch; requires ready-work FLE")
     p.add_argument("--target", choices=("bootstrap_mining", "iron_smelting", "steam_power",
                                        "automation_science", "rocket_launch"), default="rocket_launch")
     p.add_argument("--policy", choices=("jev", "deterministic", "hybrid"), default="jev")
@@ -77,6 +79,11 @@ def cli() -> None:
         p.error("--dashboard-events requires --controller hierarchical")
     if args.factory_scheduling != "serial" and args.controller != "hierarchical":
         p.error("--factory-scheduling requires --controller hierarchical")
+    if args.background_work and (
+        args.controller != "hierarchical" or args.factory_scheduling != "ready-work"
+        or args.backend != "fle" or args.target == "bootstrap_mining"
+    ):
+        p.error("--background-work requires hierarchical FLE ready-work and a native production target")
     with ExitStack() as cleanup:
         writer = None
         if args.dashboard_events:
@@ -116,7 +123,12 @@ def cli() -> None:
                           make_client(allow_mock=False, model=args.model))
             except ValueError as error:
                 p.error(str(error))
-            loop = HierarchicalLoop(make_backend(args.backend, resume=args.resume,
+            loop_type = HierarchicalLoop
+            if args.background_work:
+                from .background import BackgroundWorkLoop
+
+                loop_type = BackgroundWorkLoop
+            loop = loop_type(make_backend(args.backend, resume=args.resume,
                                                  adopt_session=args.adopt_session), jev=client,
                                     target=args.target, policy=args.policy, checkpoint=args.checkpoint,
                                     resume_controller=args.resume_controller,
