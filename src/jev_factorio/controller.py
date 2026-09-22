@@ -320,6 +320,60 @@ class HierarchicalLoop(AgentLoop):
             and 0 <= step.threshold - requested < observed < step.threshold
         )
 
+    def _partial_unacknowledged_transfer(self, plan: Plan, step,
+                                        snapshot: GameSnapshot) -> dict | None:
+        """Return a durably evidenced partial native transfer, if and only if safe.
+
+        A receipt is recorded before the Lua transfer endpoint reports a partial
+        insertion as an error.  It proves that a bounded amount was paid, but it
+        is deliberately not a successful step: the controller must fail this
+        plan and replan from the observed world instead of retrying it.  This
+        gate is intentionally limited to the original ambiguous FLE attempt,
+        its live machine identity, and its exact receipt.
+        """
+        pending, attempt = self.memory.pending or {}, self.memory.attempt
+        parameters = step.parameters or {}
+        if not (
+            snapshot.world_kind == "fle"
+            and pending.get("dispatch") == "ambiguous"
+            and step.action in {"factory_insert", "factory_extract"}
+            and step.effect == "transfer"
+            and isinstance(attempt, dict)
+            and attempt.get("origin") == "new"
+            and attempt.get("action") == step.action
+            and attempt.get("plan_id") == plan.id
+            and attempt.get("step_index") == self.memory.step_index
+            and attempt.get("receipt") == parameters.get("receipt")
+            and snapshot.factory.get("player_bound") is True
+        ):
+            return None
+        role, item, requested, receipt_key = (
+            parameters.get("role"), parameters.get("item"),
+            parameters.get("quantity"), parameters.get("receipt"),
+        )
+        entities, receipts = snapshot.factory.get("entities", {}), snapshot.factory.get("receipts", {})
+        machine = entities.get(role, {}) if isinstance(entities, dict) else {}
+        receipt = receipts.get(receipt_key) if isinstance(receipts, dict) else None
+        quantity = receipt.get("quantity") if isinstance(receipt, dict) else None
+        expected_unit = attempt.get("expected_unit_number")
+        receipt_tick = receipt.get("tick") if isinstance(receipt, dict) else None
+        if not (
+            isinstance(role, str) and isinstance(item, str)
+            and type(requested) is int and requested > 0
+            and isinstance(receipt_key, str)
+            and type(expected_unit) is int and expected_unit > 0
+            and machine.get("unit_number") == expected_unit
+            and isinstance(receipt, dict)
+            and receipt.get("role") == role
+            and receipt.get("item") == item
+            and receipt.get("extracting") is (step.action == "factory_extract")
+            and receipt.get("unit_number") == expected_unit
+            and type(quantity) is int and 0 < quantity < requested
+            and type(receipt_tick) is int and receipt_tick >= attempt.get("started_tick", -1)
+        ):
+            return None
+        return {"quantity": quantity, "receipt_tick": receipt_tick}
+
     def _prepared_transfer_never_entered_rpc(self, plan: Plan, step,
                                              snapshot: GameSnapshot) -> bool:
         """Authorize one retained transfer only when its native RPC never began.
@@ -474,6 +528,25 @@ class HierarchicalLoop(AgentLoop):
                 self._clear_plan()
             self._refresh_goals(snapshot)
             return self._record(snapshot, "verify", "Observed expected postcondition", verified=True)
+        partial_transfer = self._partial_unacknowledged_transfer(plan, step, snapshot)
+        if partial_transfer is not None:
+            quantity = partial_transfer["quantity"]
+            reason = (
+                f"Observed {quantity} of requested {step.parameters['quantity']} "
+                f"{step.parameters['item']} in the exact native transfer receipt; "
+                "fail this plan and replan without replaying the ambiguous dispatch"
+            )
+            self.memory.event(
+                "partial_transfer_reconciled",
+                plan=plan.id, step_index=self.memory.step_index,
+                receipt=step.parameters["receipt"], requested_quantity=step.parameters["quantity"],
+                transferred_quantity=quantity, receipt_tick=partial_transfer["receipt_tick"],
+                attempt_id=self.memory.attempt["id"], tick=snapshot.tick,
+            )
+            self._finish_attempt(snapshot, "partial_transfer_reconciled")
+            self.memory.status = "running"
+            self._fail_plan(reason)
+            return self._record(snapshot, "reconcile", reason)
         if self._prepared_transfer_never_entered_rpc(plan, step, snapshot):
             return self._dispatch_retained_transfer(plan, step, snapshot)
         if self._absent_ambiguous_placement(plan, step, snapshot):
