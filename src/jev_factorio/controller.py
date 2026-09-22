@@ -22,8 +22,8 @@ from .memory import CampaignMemory
 from .planning.goals import GOALS, completed, goal_order
 from .skills import Plan, compile_plans
 from .state import GameSnapshot
-from .telemetry import DISPATCH_STAGES, error_code, make_attempt, phase, utc_now, validate_phase
 from .provenance import gameplay_context
+from .telemetry import DISPATCH_STAGES, error_code, make_attempt, phase, utc_now, validate_phase
 
 
 def _json_safe(value):

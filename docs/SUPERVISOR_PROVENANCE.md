@@ -100,6 +100,8 @@ fingerprinted evidence.
 
 Source fingerprints include HEAD, staged/index entries, tracked file bytes and
 modes, and nonignored untracked files. Ignored credentials are not included.
+The configured working directory must be the Git checkout root; a nested
+directory produces unknown provenance rather than a partial source fingerprint.
 Untracked supervisor outputs/checkpoints and their atomic temporary siblings
 are excluded from the fingerprint so
 writing telemetry does not itself create a code-change signal. Tracked files
