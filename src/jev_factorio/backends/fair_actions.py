@@ -196,7 +196,7 @@ class FairActions:
             "table.insert(result.existing, position) end "
             "elseif player.surface.can_place_entity{name=" + json.dumps(name)
             + ", position=position, force=player.force, build_check_type=defines.build_check_type.manual} "
-            "then table.insert(result.buildable, position) end end; end; "
+            "then table.insert(result.buildable, position) end; end; "
             + loops + "rcon.print(helpers.table_to_json(result))"
         ))
         return (
@@ -206,7 +206,11 @@ class FairActions:
 
     def connect(self, source: Any, target: Any, prototype: Any, fluid: str = "") -> None:
         from fle.env import Direction, Position
-        from ..planning.connections import shortest_pipe_path, select_pole_positions
+        from ..planning.connections import (
+            select_pole_positions,
+            shortest_pipe_path,
+            shortest_wire_path,
+        )
 
         name = prototype.value[0]
         if name not in {"pipe", "small-electric-pole"}:
@@ -235,7 +239,12 @@ class FairActions:
                     route_error = ValueError("No nearby ordinary pole placement")
                     continue
             try:
-                route = shortest_pipe_path(origin, destination, buildable, existing)
+                if name == "small-electric-pole":
+                    route = shortest_wire_path(
+                        origin, destination, buildable, existing, max_wire_distance=6
+                    )
+                else:
+                    route = shortest_pipe_path(origin, destination, buildable, existing)
                 break
             except ValueError as error:
                 route_error = error

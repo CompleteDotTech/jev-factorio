@@ -479,6 +479,54 @@ def test_distant_pole_connection_uses_bounded_corridor_and_fair_placements(monke
                for index in range(len(placements) - 1))
 
 
+def test_connection_discovery_lua_is_read_only_and_executable(monkeypatch):
+    """The fair corridor query must parse before it can select placement cells."""
+    runtime = pytest.importorskip("lupa.lua54").LuaRuntime()
+    runtime.execute("""
+        discovery_calls = 0
+        defines = {build_check_type = {manual = "manual"}}
+        surface = {
+            find_entity = function(name, position)
+                discovery_calls = discovery_calls + 1
+                assert(name == "small-electric-pole")
+                assert(position.x == 0.5 and position.y == 0.5)
+                return nil
+            end,
+            can_place_entity = function(parameters)
+                assert(parameters.name == "small-electric-pole")
+                assert(parameters.force == force)
+                assert(parameters.build_check_type == defines.build_check_type.manual)
+                return true
+            end
+        }
+        force = {}
+        player = {force = force, surface = surface}
+        storage = {fair = {actor = function() return player end}}
+        helpers = {table_to_json = function(result)
+            assert(#result.buildable == 1 and #result.existing == 0)
+            return '{"buildable":[{"x":0.5,"y":0.5}],"existing":[]}'
+        end}
+        rcon = {print = function(value) response = value end}
+    """)
+
+    from jev_factorio.backends.fair_actions import FairActions
+
+    fair = object.__new__(FairActions)
+
+    def command(script):
+        runtime.execute(script)
+        return runtime.eval("response")
+
+    monkeypatch.setattr(fair, "command", command)
+    buildable, existing = fair._connection_cells(
+        "small-electric-pole", "", [(0, 0, 0, 0)]
+    )
+
+    assert buildable == {(0.5, 0.5)}
+    assert existing == set()
+    assert runtime.eval("discovery_calls") == 1
+
+
 @pytest.mark.parametrize("reachable", [True, False])
 def test_harvest_reacquires_live_target_after_a_partial_native_yield(monkeypatch, reachable):
     import sys
