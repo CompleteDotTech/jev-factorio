@@ -149,6 +149,61 @@ class FairActions:
         return self.call("insert", entity.name, self.position(entity.position),
                          prototype.value[0], quantity)["quantity"]
 
+    @staticmethod
+    def _connection_corridor(start: dict, end: dict, *, horizontal_first: bool) -> list[tuple[int, int, int, int]]:
+        """Bound native placement discovery to one collision-aware L corridor.
+
+        Scanning the complete rectangle between two distant endpoints makes a
+        narrow, ordinary pole route depend on its bounding-box area.  The
+        corridor keeps the search bounded while retaining eight cells of local
+        detour room around each leg.  A caller can try the opposite L without
+        widening either search into a remote-placement shortcut.
+        """
+        source_x, source_y = math.floor(start["x"]), math.floor(start["y"])
+        target_x, target_y = math.floor(end["x"]), math.floor(end["y"])
+        left, right = min(source_x, target_x) - 8, max(source_x, target_x) + 8
+        top, bottom = min(source_y, target_y) - 8, max(source_y, target_y) + 8
+        if horizontal_first:
+            return [
+                (left, right, source_y - 8, source_y + 8),
+                (target_x - 8, target_x + 8, top, bottom),
+            ]
+        return [
+            (source_x - 8, source_x + 8, top, bottom),
+            (left, right, target_y - 8, target_y + 8),
+        ]
+
+    def _connection_cells(self, name: str, fluid: str,
+                          rectangles: list[tuple[int, int, int, int]]) -> tuple[set, set]:
+        searched = sum((right - left + 1) * (bottom - top + 1)
+                       for left, right, top, bottom in rectangles)
+        if searched > 16_384:
+            raise ValueError("Connection search exceeds bounded area")
+        loops = "".join(
+            f"for horizontal={left},{right} do for vertical={top},{bottom} do "
+            "include(horizontal, vertical) end end; "
+            for left, right, top, bottom in rectangles
+        )
+        cells = json.loads(self.command(
+            "local player = storage.fair.actor(); local result = {buildable={}, existing={}}; "
+            "local seen = {}; local function include(horizontal, vertical) "
+            "local key = horizontal .. ':' .. vertical; if seen[key] then return end; seen[key] = true; "
+            "local position = {x=horizontal+0.5,y=vertical+0.5}; "
+            "local entity = player.surface.find_entity(" + json.dumps(name) + ", position); "
+            "if entity and entity.force == player.force then "
+            "local contents = #entity.fluidbox > 0 and entity.fluidbox[1]; "
+            "if not contents or contents.name == " + json.dumps(fluid) + " then "
+            "table.insert(result.existing, position) end "
+            "elseif player.surface.can_place_entity{name=" + json.dumps(name)
+            + ", position=position, force=player.force, build_check_type=defines.build_check_type.manual} "
+            "then table.insert(result.buildable, position) end end; end; "
+            + loops + "rcon.print(helpers.table_to_json(result))"
+        ))
+        return (
+            {(point["x"], point["y"]) for point in cells["buildable"]},
+            {(point["x"], point["y"]) for point in cells["existing"]},
+        )
+
     def connect(self, source: Any, target: Any, prototype: Any, fluid: str = "") -> None:
         from fle.env import Direction, Position
         from ..planning.connections import shortest_pipe_path, select_pole_positions
@@ -158,38 +213,34 @@ class FairActions:
             raise ValueError("Unsupported fair connection type")
         start = self.position(getattr(source, "position", source))
         end = self.position(getattr(target, "position", target))
-        left, right = math.floor(min(start["x"], end["x"])) - 8, math.ceil(max(start["x"], end["x"])) + 8
-        top, bottom = math.floor(min(start["y"], end["y"])) - 8, math.ceil(max(start["y"], end["y"])) + 8
-        if (right - left + 1) * (bottom - top + 1) > 16384:
-            raise ValueError("Connection search exceeds bounded area")
-        cells = json.loads(self.command(
-            "local player = storage.fair.actor(); local result = {buildable={}, existing={}}; "
-            f"for horizontal={left},{right} do for vertical={top},{bottom} do "
-            "local position = {x=horizontal+0.5,y=vertical+0.5}; "
-            "local entity = player.surface.find_entity(" + json.dumps(name) + ", position); "
-            "if entity and entity.force == player.force then "
-            "local contents = #entity.fluidbox > 0 and entity.fluidbox[1]; "
-            "if not contents or contents.name == " + json.dumps(fluid) + " then "
-            "table.insert(result.existing, position) end "
-            "elseif player.surface.can_place_entity{name=" + json.dumps(name)
-            + ", position=position, force=player.force, build_check_type=defines.build_check_type.manual} "
-            "then table.insert(result.buildable, position) end end end; "
-            "rcon.print(helpers.table_to_json(result))"
-        ))
-        buildable = {(point["x"], point["y"]) for point in cells["buildable"]}
-        existing = {(point["x"], point["y"]) for point in cells["existing"]}
-        origin, destination = (start["x"], start["y"]), (end["x"], end["y"])
-        if name == "small-electric-pole":
-            candidates = buildable | existing
-            if not candidates:
-                raise ValueError("No ordinary pole placement cells")
-            origin = min(candidates, key=lambda point: math.dist(point, origin))
-            destination = min(candidates, key=lambda point: math.dist(point, destination))
-            if math.dist(origin, (start["x"], start["y"])) > 3.5 or math.dist(
-                destination, (end["x"], end["y"])
-            ) > 3.5:
-                raise ValueError("No nearby ordinary pole placement")
-        route = shortest_pipe_path(origin, destination, buildable, existing)
+        route = None
+        route_error = None
+        for horizontal_first in (True, False):
+            buildable, existing = self._connection_cells(
+                name, fluid, self._connection_corridor(
+                    start, end, horizontal_first=horizontal_first,
+                ),
+            )
+            origin, destination = (start["x"], start["y"]), (end["x"], end["y"])
+            if name == "small-electric-pole":
+                candidates = buildable | existing
+                if not candidates:
+                    route_error = ValueError("No ordinary pole placement cells")
+                    continue
+                origin = min(candidates, key=lambda point: math.dist(point, origin))
+                destination = min(candidates, key=lambda point: math.dist(point, destination))
+                if math.dist(origin, (start["x"], start["y"])) > 3.5 or math.dist(
+                    destination, (end["x"], end["y"])
+                ) > 3.5:
+                    route_error = ValueError("No nearby ordinary pole placement")
+                    continue
+            try:
+                route = shortest_pipe_path(origin, destination, buildable, existing)
+                break
+            except ValueError as error:
+                route_error = error
+        if route is None:
+            raise route_error or ValueError("No passable connection path")
         if name == "small-electric-pole":
             route = select_pole_positions(route, max_wire_distance=6)
         required = sum(point not in existing for point in route)
