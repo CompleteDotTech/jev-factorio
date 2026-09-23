@@ -6,6 +6,7 @@ from jev_factorio.planning.connections import (
     MAX_CELLS,
     select_pole_positions,
     shortest_pipe_path,
+    shortest_wire_path,
 )
 
 
@@ -29,6 +30,17 @@ def test_existing_pipes_bridge_otherwise_disconnected_cells():
     assert shortest_pipe_path((0, 0), (2, 0), endpoints, {(1, 0)}) == [
         (0, 0), (1, 0), (2, 0),
     ]
+
+
+def test_wire_route_uses_verified_placement_cells_across_a_collision_gap():
+    cells = {(0, 0), (6, 0), (12, 0)}
+    with pytest.raises(ValueError, match="No passable"):
+        shortest_pipe_path((0, 0), (12, 0), cells)
+    route = shortest_wire_path((0, 0), (12, 0), cells, max_wire_distance=6)
+    assert route == [(0.0, 0.0), (6.0, 0.0), (12.0, 0.0)]
+    assert set(route) <= cells
+    assert all(math.dist(left, right) <= 6
+               for left, right in zip(route, route[1:]))
 
 
 @pytest.mark.parametrize("invalid", [
