@@ -421,6 +421,64 @@ def test_place_entity_uses_selected_direction_and_preserves_exact_direction(monk
     assert approaches[0][0] == Position(x=3, y=4)
 
 
+def test_distant_pole_connection_uses_bounded_corridor_and_fair_placements(monkeypatch):
+    import sys
+    import types
+    from dataclasses import dataclass
+    from types import SimpleNamespace
+
+    @dataclass
+    class Position:
+        x: float
+        y: float
+
+    Direction = SimpleNamespace(UP=SimpleNamespace(value=0))
+    fle = types.ModuleType("fle")
+    fle_env = types.ModuleType("fle.env")
+    fle_env.Direction, fle_env.Position = Direction, Position
+    monkeypatch.setitem(sys.modules, "fle", fle)
+    monkeypatch.setitem(sys.modules, "fle.env", fle_env)
+
+    from jev_factorio.backends.fair_actions import FairActions
+
+    fair = object.__new__(FairActions)
+    commands, placements = [], []
+    source, target = Position(x=43.5, y=41.5), Position(x=15.5, y=383.5)
+    path = (
+        [(x + 0.5, 41.5) for x in range(15, 44)]
+        + [(15.5, y + 0.5) for y in range(42, 384)]
+    )
+
+    def command(script):
+        commands.append(script)
+        if len(commands) == 1:
+            assert "for horizontal=7,51 do for vertical=33,49 do" in script
+            assert "for horizontal=7,23 do for vertical=33,391 do" in script
+            assert "for horizontal=7,51 do for vertical=33,391 do" not in script
+            return __import__("json").dumps({
+                "buildable": [{"x": x, "y": y} for x, y in path],
+                "existing": [],
+            })
+        return '{"count":104}'
+
+    monkeypatch.setattr(fair, "command", command)
+    monkeypatch.setattr(
+        fair, "place_entity",
+        lambda prototype, position, direction, exact: placements.append(
+            (position, direction, exact)
+        ),
+    )
+    prototype = SimpleNamespace(value=("small-electric-pole", object()))
+
+    fair.connect(source, target, prototype, "electricity")
+
+    assert len(commands) == 2
+    assert placements
+    assert all(direction is Direction.UP and exact for _, direction, exact in placements)
+    assert all(placements[index][0] != placements[index + 1][0]
+               for index in range(len(placements) - 1))
+
+
 @pytest.mark.parametrize("reachable", [True, False])
 def test_harvest_reacquires_live_target_after_a_partial_native_yield(monkeypatch, reachable):
     import sys
